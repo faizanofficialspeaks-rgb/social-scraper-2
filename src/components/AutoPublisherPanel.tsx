@@ -147,7 +147,7 @@ export const AutoPublisherPanel: React.FC = () => {
       try {
         await fetchJson('/api/tiktok/exchange', {
           method: 'POST',
-          body: JSON.stringify({ code })
+          body: JSON.stringify({ code, state: params.get('state') })
         });
         setFormMsg({ text: 'TikTok authorized — account connected successfully' });
         const statusRes = await fetchJson('/api/schedule/connection-status');

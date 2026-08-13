@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createHash, randomBytes } from "node:crypto";
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
@@ -1137,22 +1138,34 @@ app.post("/api/schedule/config", (req, res) => {
 // TIKTOK OAUTH (Login Kit + Content Posting API)
 // ==========================================
 
+// PKCE: code verifiers keyed by state (required by TikTok since 2025)
+const tiktokPkceStore = new Map<string, { verifier: string; createdAt: number }>();
+
+function base64UrlEncode(buf: Buffer): string {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 /**
- * GET /api/tiktok/oauth-url - Build the TikTok authorize URL for the sandbox app
+ * GET /api/tiktok/oauth-url - Build the TikTok authorize URL for the sandbox app (PKCE flow)
  */
 app.get("/api/tiktok/oauth-url", (req, res) => {
   try {
     if (!TIKTOK_CLIENT_KEY) {
       return res.status(400).json({ error: "TIKTOK_CLIENT_KEY not set — add it to .env" });
     }
-    const state = Math.random().toString(36).slice(2);
+    const state = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    const verifier = base64UrlEncode(randomBytes(64));
+    tiktokPkceStore.set(state, { verifier, createdAt: Date.now() });
+    const codeChallenge = base64UrlEncode(createHash("sha256").update(verifier).digest());
     const url =
       "https://www.tiktok.com/v2/auth/authorize/?" +
       `client_key=${encodeURIComponent(TIKTOK_CLIENT_KEY)}` +
       `&scope=${encodeURIComponent(TIKTOK_OAUTH_SCOPES)}` +
       `&response_type=code` +
       `&redirect_uri=${encodeURIComponent(TIKTOK_REDIRECT_URI)}` +
-      `&state=${state}`;
+      `&state=${state}` +
+      `&code_challenge=${codeChallenge}` +
+      `&code_challenge_method=S256`;
     res.json({ success: true, url, state, redirectUri: TIKTOK_REDIRECT_URI });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -1164,11 +1177,14 @@ app.get("/api/tiktok/oauth-url", (req, res) => {
  */
 app.post("/api/tiktok/exchange", async (req, res) => {
   try {
-    const { code } = req.body || {};
+    const { code, state } = req.body || {};
     if (!code) return res.status(400).json({ error: "code is required" });
     if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) {
       throw new Error("TikTok client credentials not configured — add TIKTOK_CLIENT_KEY/SECRET to .env");
     }
+    const pkce = state ? tiktokPkceStore.get(state) : undefined;
+    if (!pkce) throw new Error("Missing PKCE verifier — start the flow from the app (Connect with TikTok)");
+    tiktokPkceStore.delete(state);
 
     const params = new URLSearchParams();
     params.set("client_key", TIKTOK_CLIENT_KEY);
@@ -1176,6 +1192,7 @@ app.post("/api/tiktok/exchange", async (req, res) => {
     params.set("code", code);
     params.set("grant_type", "authorization_code");
     params.set("redirect_uri", TIKTOK_REDIRECT_URI);
+    params.set("code_verifier", pkce.verifier);
 
     const tokenRes = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
       method: "POST",
