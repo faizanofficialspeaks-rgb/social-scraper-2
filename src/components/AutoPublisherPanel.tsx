@@ -4,7 +4,7 @@ import {
   Wand2, PlusCircle, Loader2, AlertTriangle, CheckCircle2, Clock, Video
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE || `http://${window.location.hostname || '127.0.0.1'}:3000`;
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3000';
 
 type Platform = 'instagram' | 'tiktok' | 'facebook';
 
