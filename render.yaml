@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: socialscraper-server
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AI_SERVICE
+        value: gemini
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: OLLAMA_MODEL
+        value: gpt-oss:120b
+      - key: OLLAMA_BASE_URL
+        value: http://localhost:11434
