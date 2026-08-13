@@ -325,7 +325,7 @@ const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY || "";
 const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "";
 const TIKTOK_REDIRECT_URI =
   process.env.TIKTOK_CLIENT_REDIRECT_URI || "https://social-scraper-m79h.vercel.app/";
-const TIKTOK_OAUTH_SCOPES = "user.info.basic,user.info.profile,video.publish,video.upload";
+const TIKTOK_OAUTH_SCOPES = "user.info.basic,video.publish,video.upload";
 
 /**
  * Loose accessor for a platform connection (avoids union-type narrowing pain).
