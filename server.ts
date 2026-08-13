@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createHash, randomBytes } from "node:crypto";
+import fs from "node:fs";
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
@@ -480,7 +481,7 @@ async function postToInstagram(item: ScheduledItem): Promise<{ success: boolean;
 
 /**
  * Post to TikTok via TikTok Content Posting API (real, requires TikTok developer app).
- * Flow: POST /v2/post/publish/video/init/ (multipart upload) → poll status
+ * Flow: POST /v2/post/publish/video/init/ (JSON, source=FILE_UPLOAD) → PUT video to upload_url → poll status
  */
 let tiktokPendingPublishes: Map<string, { publishId: string; pollCount: number }> = new Map();
 
@@ -498,34 +499,62 @@ async function postToTikTok(item: ScheduledItem): Promise<{ success: boolean; er
     if (!isVideo) {
       throw new Error("TikTok only supports video publishing via the Content Posting API");
     }
+    const videoSize = buffer.length;
 
-    // Step 1: Initialize publish (multipart video upload)
-    const form = new FormData();
-    form.append("video", new Blob([buffer], { type: "video/mp4" }), `video_${item.shortcode}.mp4`);
-    form.append(
-      "post_info",
-      JSON.stringify({
-        title: (item.caption || "Check this out!").slice(0, 2200),
-        privacy_level: "PUBLIC_TO_EVERYONE",
-        disable_duet: false,
-        disable_stitch: false,
-        disable_comment: false,
-      })
-    );
-
+    // Step 1: Initialize publish (JSON — FILE_UPLOAD source). Sandbox/unaudited apps must use SELF_ONLY.
     const initRes = await fetch(`${TIKTOK_API_BASE}/post/publish/video/init/`, {
       method: "POST",
-      headers: { "Authorization": `Bearer ${tk.accessToken}` },
-      body: form,
+      headers: {
+        "Authorization": `Bearer ${tk.accessToken}`,
+        "Content-Type": "application/json; charset=UTF-8",
+      },
+      body: JSON.stringify({
+        post_info: {
+          title: (item.caption || "Check this out!").slice(0, 2200),
+          privacy_level: "SELF_ONLY",
+          disable_duet: false,
+          disable_comment: false,
+          disable_stitch: false,
+        },
+        source_info: {
+          source: "FILE_UPLOAD",
+          video_size: videoSize,
+          chunk_size: videoSize,
+          total_chunk_count: 1,
+        },
+      }),
     });
     const initData: any = await initRes.json();
-    if (!initRes.ok || initData.error) {
-      throw new Error(`TikTok API (init): ${initData.error?.message || initData.error?.code || initRes.statusText} (${initRes.status})`);
+    const initErrCode = initData?.error?.code;
+    if (!initRes.ok || (initErrCode && initErrCode !== "ok")) {
+      const code = initData.error?.code || "";
+      const msg = initData.error?.message || initRes.statusText;
+      if (code === "unaudited_client_can_only_post_to_private_accounts") {
+        throw new Error("TikTok sandbox restriction: set the target account to PRIVATE in the TikTok app (unaudited clients can only post to private accounts), then retry.");
+      }
+      throw new Error(`TikTok API (init): ${msg} (${initRes.status})`);
     }
     const publishId = initData.data?.publish_id;
+    const uploadUrl = initData.data?.upload_url;
     if (!publishId) throw new Error("TikTok init did not return publish_id");
+    if (!uploadUrl) throw new Error("TikTok init did not return upload_url");
 
-    // Step 2: Poll publish status (up to 3 min)
+    // Step 2: Upload video bytes to TikTok upload_url (single chunk)
+    const uploadRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "video/mp4",
+        "Content-Length": String(videoSize),
+        "Content-Range": `bytes 0-${videoSize - 1}/${videoSize}`,
+      },
+      body: new Uint8Array(buffer),
+    });
+    if (!uploadRes.ok) {
+      const upText = await uploadRes.text();
+      throw new Error(`TikTok upload failed HTTP ${uploadRes.status}: ${upText.substring(0, 200)}`);
+    }
+
+    // Step 3: Poll publish status (up to 3 min)
     let pollCount = 0;
     let finalStatus = "";
     while (pollCount < 20) {
@@ -540,10 +569,10 @@ async function postToTikTok(item: ScheduledItem): Promise<{ success: boolean; er
         body: JSON.stringify({ publish_id: publishId }),
       });
       const statusData: any = await statusRes.json();
-      if (!statusRes.ok || statusData.error) {
-        throw new Error(`TikTok API (status): ${statusData.error?.message || statusRes.statusText}`);
+      if (!statusRes.ok) {
+        throw new Error(`TikTok API (status): HTTP ${statusRes.status}`);
       }
-      finalStatus = statusData.data?.status || "PROCESSING_UPLOAD";
+      finalStatus = statusData?.data?.status || "PROCESSING_UPLOAD";
       if (finalStatus === "PUBLISH_COMPLETE") break;
       if (finalStatus === "FAILED" || finalStatus === "PUBLISH_FAILED") {
         throw new Error(`TikTok publish failed: ${finalStatus} — ${JSON.stringify(statusData.data?.fail_reason || "")}`);
@@ -941,6 +970,7 @@ app.post("/api/schedule/connect-page", (req, res) => {
         expiresAt: expiresAt ? Date.now() + expiresAt * 1000 : 0,
         connected: true
       };
+      saveTikTokCredentials();
     } else if (platform === 'facebook') {
       if (!pageId) {
         return res.status(400).json({ error: "Facebook requires pageId" });
@@ -1138,6 +1168,32 @@ app.post("/api/schedule/config", (req, res) => {
 // TIKTOK OAUTH (Login Kit + Content Posting API)
 // ==========================================
 
+// Persist TikTok credentials across restarts (local file, gitignored)
+const TIKTOK_CRED_FILE = path.join(process.cwd(), ".tiktok-credentials.json");
+
+function saveTikTokCredentials() {
+  try {
+    const tk = schedulerState.connectedPages.tiktok;
+    if (!tk.accessToken) return;
+    fs.writeFileSync(TIKTOK_CRED_FILE, JSON.stringify(tk, null, 2), "utf8");
+  } catch (e) {
+    console.warn("[TT-OAUTH] Could not persist credentials:", e);
+  }
+}
+
+function loadTikTokCredentials() {
+  try {
+    if (!fs.existsSync(TIKTOK_CRED_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(TIKTOK_CRED_FILE, "utf8"));
+    if (data && data.accessToken) {
+      schedulerState.connectedPages.tiktok = { ...data, connected: true };
+      console.log(`[TT-OAUTH] Loaded saved TikTok credentials for: ${data.username || data.openId || "user"}`);
+    }
+  } catch (e) {
+    console.warn("[TT-OAUTH] Could not load saved credentials:", e);
+  }
+}
+
 // PKCE: code verifiers keyed by state (required by TikTok since 2025)
 const tiktokPkceStore = new Map<string, { verifier: string; createdAt: number }>();
 
@@ -1228,6 +1284,7 @@ app.post("/api/tiktok/exchange", async (req, res) => {
       expiresAt: Date.now() + (Number(tokenData.expires_in) || 24 * 3600) * 1000,
       connected: true,
     };
+    saveTikTokCredentials();
 
     console.log(`[TT-OAUTH] Connected TikTok account: ${username || openId}`);
     res.json({ success: true, openId, username, scope: tokenData.scope || "" });
@@ -1798,6 +1855,8 @@ app.get("/api/proxy-media", async (req, res) => {
 });
 
 async function startServer() {
+  loadTikTokCredentials();
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

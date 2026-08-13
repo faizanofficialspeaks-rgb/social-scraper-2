@@ -4,4 +4,4 @@ dist/
 .env.local
 *.local
 *.log
-IG_VIDEO_FIX/
+IG_VIDEO_FIX/.tiktok-credentials.json
