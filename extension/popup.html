@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Instagram Scraper</title>
+  <style>
+    body {
+      width: 280px;
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #ffffff;
+      color: #0f172a;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .logo {
+      width: 28px;
+      height: 28px;
+      background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
+      color: white;
+      font-weight: 900;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+    }
+    .title {
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .status {
+      font-size: 12px;
+      color: #64748b;
+      margin-bottom: 16px;
+    }
+    .btn {
+      width: 100%;
+      padding: 9px 12px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      color: #0f172a;
+      cursor: pointer;
+      text-align: center;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #e1306c, #c13584);
+      color: white;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">IG</div>
+    <div class="title">Instagram Scraper</div>
+  </div>
+  <div class="status" id="status-text">Navigate to Instagram profile or reel page to start.</div>
+  <button class="btn btn-primary" id="btn-open-options">Extension Options</button>
+  <script src="popup.js"></script>
+</body>
+</html>

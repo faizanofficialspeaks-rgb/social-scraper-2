@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #F5F2ED;
+    color: #1A1A1A;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  h1, h2, h3, .font-serif {
+    font-family: 'Newsreader', Georgia, Cambria, serif;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Global focus ring — accessible & branded */
+  *:focus-visible {
+    outline: none;
+    ring: 2px;
+    ring-offset: 2px;
+    ring-color: #FF6321;
+    ring-offset-color: #F5F2ED;
+  }
+
+  /* Global active/pressed state for tactile feedback */
+  button:active,
+  [role="button"]:active,
+  input[type="button"]:active,
+  input[type="submit"]:active {
+    transform: scale(0.98);
+  }
+
+  /* Ensure minimum 44x44 hit area for icon-only buttons */
+  .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Checkbox/radio hit area expansion */
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 20px;
+    height: 20px;
+    accent-color: #FF6321;
+  }
+
+  /* Modal keyboard trap helper */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    backdrop-filter: blur(4px);
+  }
+
+  /* Text-wrap balance for headings */
+  h1, h2, h3, h4 {
+    text-wrap: balance;
+  }
+
+  /* Tabular numerals for counters */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom scrollbars for editorial look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #F5F2ED;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(26, 26, 26, 0.25);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(26, 26, 26, 0.5);
+}
+
+/* Utility: empty state pattern */
+.empty-state {
+  @apply flex flex-col items-center justify-center py-12 px-4 text-center;
+}
+.empty-state-icon {
+  @apply text-6xl text-[#1A1A1A]/20 mb-3;
+}
+.empty-state-title {
+  @apply text-lg font-serif text-[#1A1A1A] mb-1;
+}
+.empty-state-desc {
+  @apply text-sm text-[#1A1A1A]/50 max-w-xs;
+}

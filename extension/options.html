@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SocialScraper — Scraper Settings</title>
+  <style>
+    body {
+      max-width: 600px;
+      margin: 20px auto;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #F5F2ED;
+      color: #1A1A1A;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .brand .logo {
+      width: 36px;
+      height: 36px;
+      background: #1A1A1A;
+      color: #F5F2ED;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: Georgia, serif;
+      font-style: italic;
+      font-weight: bold;
+      font-size: 16px;
+    }
+    .brand h1 {
+      font-family: Georgia, serif;
+      font-size: 20px;
+      font-weight: normal;
+      margin: 0;
+      letter-spacing: -0.02em;
+    }
+    .brand p {
+      margin: 0;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      color: #1A1A1A / 0.5;
+      color: rgba(26,26,26,0.5);
+      font-weight: 700;
+    }
+    .card {
+      background: #FBF9F6;
+      border: 1px solid rgba(26,26,26,0.1);
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .eyebrow {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      font-weight: 700;
+      color: rgba(26,26,26,0.4);
+      margin: 0 0 8px 0;
+    }
+    h2 {
+      font-family: Georgia, serif;
+      font-size: 22px;
+      font-weight: normal;
+      margin: 0 0 4px 0;
+    }
+    .sub {
+      font-size: 12px;
+      color: rgba(26,26,26,0.6);
+      margin: 0 0 14px 0;
+    }
+    .form-group {
+      margin-bottom: 14px;
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    input[type="number"], input[type="text"], select {
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: 4px;
+      border: 1px solid rgba(26,26,26,0.2);
+      font-size: 13px;
+      background: #fff;
+      color: #1A1A1A;
+      box-sizing: border-box;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 500;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .btn-save {
+      background: #1A1A1A;
+      color: #F5F2ED;
+      border: none;
+      padding: 10px 20px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      border-radius: 0;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn-save:hover { background: #000; }
+    .status {
+      padding: 8px 12px;
+      font-size: 12px;
+      margin: 8px 0;
+      display: none;
+    }
+    .status-ok { background: #e7f2e7; color: #1e5b1e; border: 1px solid #bcd9bc; }
+    .status-err { background: #fbe4e4; color: #8c2020; border: 1px solid #f0c4c4; }
+    .notice {
+      border: 1px solid rgba(255,99,33,0.3);
+      background: rgba(255,99,33,0.06);
+      padding: 12px 14px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: rgba(26,26,26,0.8);
+      margin-bottom: 16px;
+    }
+    .notice strong {
+      display: block;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.2em;
+      color: #FF6321;
+      margin-bottom: 4px;
+    }
+    .small-text { font-size: 11px; color: rgba(26,26,26,0.5); margin-top: 4px; display: block; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  </style>
+</head>
+<body>
+
+  <div class="brand">
+    <div class="logo">IG</div>
+    <div>
+      <h1>SocialScraper</h1>
+      <p>Extension Settings</p>
+    </div>
+  </div>
+
+  <div class="notice">
+    <strong>Auto-Publisher Moved to Web App</strong>
+    Scheduling, platform connections, AI captions & calendar are now managed from the
+    <b>Publisher</b> tab inside the SocialScraper web app (http://localhost:5173).
+    This page only controls scraper behavior.
+  </div>
+
+  <!-- Scraper Behavior -->
+  <div class="card">
+    <p class="eyebrow">Scraper Behavior</p>
+    <h2>Auto-Scroll & Quality</h2>
+    <p class="sub">Controls how the extension scrapes feeds and downloads media.</p>
+
+    <div class="form-group">
+      <label>Scroll Delay (ms)</label>
+      <input type="number" id="scrollDelay" min="200" max="30000" step="100">
+      <small class="small-text">Pause between auto-scroll steps. Higher = safer.</small>
+    </div>
+
+    <div class="form-group">
+      <label>Preferred Download Quality</label>
+      <select id="preferredQuality">
+        <option value="highest">Highest available</option>
+        <option value="balanced">Balanced</option>
+        <option value="lowest">Lowest (smallest files)</option>
+      </select>
+      <small class="small-text">Applied during media URL selection.</small>
+    </div>
+
+    <div class="form-group">
+      <label style="display: flex; align-items: center; gap: 8px; font-weight: 500;">
+        <input type="checkbox" id="autoZipMetadata" style="width: auto;">
+        Auto-bundle metadata into ZIP exports
+      </label>
+    </div>
+
+    <div class="form-group">
+      <label style="display: flex; align-items: center; gap: 8px; font-weight: 500;">
+        <input type="checkbox" id="watermarkCleaningEnabled" style="width: auto;">
+        Enable watermark removal
+      </label>
+    </div>
+
+    <div id="saveStatus" class="status"></div>
+    <button class="btn-save" id="saveBtn">Save Settings</button>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

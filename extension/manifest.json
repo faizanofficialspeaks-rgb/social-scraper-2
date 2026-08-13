@@ -1,0 +1,136 @@
+{
+  "manifest_version": 3,
+  "name": "Social Media Scraper & Media Downloader",
+  "version": "1.0.0",
+  "description": "Scrape and download Instagram, TikTok, and Facebook posts, reels, metadata, and export ZIP archives.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.instagram.com/*",
+    "https://instagram.com/*",
+    "https://*.cdninstagram.com/*",
+    "https://*.fbcdn.net/*",
+    "https://*.tiktok.com/*",
+    "https://tiktok.com/*",
+    "https://*.tiktokcdn.com/*",
+    "https://*.byteoversea.com/*",
+    "https://*.facebook.com/*",
+    "https://facebook.com/*",
+    "https://web.facebook.com/*",
+    "https://m.facebook.com/*",
+    "https://*.fb.com/*",
+    "https://fb.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://instagram.com/*"
+      ],
+      "js": [
+        "utils/jszip.min.js",
+        "utils/normalization.js",
+        "utils/media-ranking.js",
+        "utils/deduplication.js",
+        "utils/filename.js",
+        "utils/export.js",
+        "instagram-content.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.tiktok.com/*",
+        "https://tiktok.com/*"
+      ],
+      "js": [
+        "utils/jszip.min.js",
+        "utils/normalization.js",
+        "utils/media-ranking.js",
+        "utils/deduplication.js",
+        "utils/filename.js",
+        "utils/export.js",
+        "tiktok-content.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://facebook.com/*",
+        "https://web.facebook.com/*",
+        "https://m.facebook.com/*",
+        "https://*.facebook.com/*",
+        "https://*.fb.com/*"
+      ],
+      "js": [
+        "utils/jszip.min.js",
+        "utils/normalization.js",
+        "utils/media-ranking.js",
+        "utils/deduplication.js",
+        "utils/filename.js",
+        "utils/export.js",
+        "facebook-content.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://instagram.com/*"
+      ],
+      "js": [
+        "main-instagram.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "exclude_matches": [
+        "https://www.instagram.com/*",
+        "https://instagram.com/*",
+        "https://www.tiktok.com/*",
+        "https://tiktok.com/*",
+        "https://www.facebook.com/*",
+        "https://facebook.com/*"
+      ],
+      "js": [
+        "app-bridge.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Social Scraper"
+  },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "panel.css",
+        "utils/*.js"
+      ],
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://instagram.com/*",
+        "https://www.tiktok.com/*",
+        "https://tiktok.com/*",
+        "https://www.facebook.com/*",
+        "https://facebook.com/*"
+      ]
+    }
+  ]
+}
