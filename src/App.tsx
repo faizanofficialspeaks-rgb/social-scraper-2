@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import JSZip from 'jszip';
 import { Header } from './components/Header';
 import { ExtensionDownloader } from './components/ExtensionDownloader';
@@ -14,6 +14,13 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'instagram' | 'tiktok' | 'facebook' | 'setup' | 'publisher'>('instagram');
   const [isZipping, setIsZipping] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
+
+  // TikTok OAuth callback returns ?code= to the root — open the Publisher tab to complete it
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('code')) {
+      setActiveTab('publisher');
+    }
+  }, []);
 
   // Dynamic 1-Click Chrome Extension ZIP Packager
   const handleDownloadZip = async () => {

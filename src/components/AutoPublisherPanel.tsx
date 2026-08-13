@@ -138,6 +138,28 @@ export const AutoPublisherPanel: React.FC = () => {
     };
   }, [refreshAll]);
 
+  // TikTok OAuth callback: ?code=...&state=... lands on this SPA after authorize
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    if (!code) return;
+    (async () => {
+      try {
+        await fetchJson('/api/tiktok/exchange', {
+          method: 'POST',
+          body: JSON.stringify({ code })
+        });
+        setFormMsg({ text: 'TikTok authorized — account connected successfully' });
+        const statusRes = await fetchJson('/api/schedule/connection-status');
+        setConn(statusRes.status);
+      } catch (e) {
+        setFormMsg({ text: `TikTok OAuth failed: ${(e as Error).message}`, error: true });
+      }
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setWorking('');
+    })();
+  }, [fetchJson]);
+
   const busy = (label: string) => {
     setWorking(label);
     return setTimeout(() => setWorking(''), 4000);
@@ -185,6 +207,18 @@ export const AutoPublisherPanel: React.FC = () => {
       setFormMsg({ text: (e as Error).message, error: true });
     }
     setWorking('');
+  };
+
+  const handleTikTokOAuth = async () => {
+    setFormMsg(null);
+    busy('Redirecting to TikTok...');
+    try {
+      const res = await fetchJson('/api/tiktok/oauth-url');
+      window.location.href = res.url;
+    } catch (e) {
+      setFormMsg({ text: (e as Error).message, error: true });
+      setWorking('');
+    }
   };
 
   const handleDisconnect = async (platform: Platform) => {
@@ -252,7 +286,9 @@ export const AutoPublisherPanel: React.FC = () => {
     try {
       const mediaUrl =
         genMediaType === 'video'
-          ? 'VIDEO:' + genShortcode.trim()
+          ? genPlatform === 'tiktok'
+            ? `${window.location.origin}/demo.mp4`
+            : 'VIDEO:' + genShortcode.trim()
           : 'IMAGE:' + genShortcode.trim();
       const res = await fetchJson('/api/schedule/add-with-caption', {
         method: 'POST',
@@ -346,6 +382,12 @@ export const AutoPublisherPanel: React.FC = () => {
                           </li>
                         ))}
                       </ul>
+                    )}
+                    {!c.connected && p === 'tiktok' && (
+                      <button onClick={handleTikTokOAuth} className="mt-3 w-full flex items-center justify-center gap-2 bg-[#1A1A1A] text-white hover:bg-black px-3 py-2.5 font-sans text-[10px] uppercase tracking-[0.15em] font-bold transition-all">
+                        {working === 'Redirecting to TikTok...' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3 text-[#FF0050]" />}
+                        Connect with TikTok (Login Kit OAuth)
+                      </button>
                     )}
                     <div className="mt-3 flex gap-2">
                       {c.connected ? (

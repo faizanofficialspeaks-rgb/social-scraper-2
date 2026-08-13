@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
@@ -317,6 +318,13 @@ const schedulerState: SchedulerState = {
 const GRAPH_API_BASE = "https://graph.facebook.com/v21.0";
 const TIKTOK_API_BASE = "https://open.tiktokapis.com/v2";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+// TikTok OAuth (sandbox) — set in .env
+const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY || "";
+const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "";
+const TIKTOK_REDIRECT_URI =
+  process.env.TIKTOK_CLIENT_REDIRECT_URI || "https://social-scraper-m79h.vercel.app/";
+const TIKTOK_OAUTH_SCOPES = "user.info.basic,user.info.profile,video.publish,video.upload";
 
 /**
  * Loose accessor for a platform connection (avoids union-type narrowing pain).
@@ -1121,6 +1129,93 @@ app.post("/api/schedule/config", (req, res) => {
     console.log("[SCHEDULER] Config updated:", schedulerState.config);
     res.json({ success: true, config: schedulerState.config });
   } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ==========================================
+// TIKTOK OAUTH (Login Kit + Content Posting API)
+// ==========================================
+
+/**
+ * GET /api/tiktok/oauth-url - Build the TikTok authorize URL for the sandbox app
+ */
+app.get("/api/tiktok/oauth-url", (req, res) => {
+  try {
+    if (!TIKTOK_CLIENT_KEY) {
+      return res.status(400).json({ error: "TIKTOK_CLIENT_KEY not set — add it to .env" });
+    }
+    const state = Math.random().toString(36).slice(2);
+    const url =
+      "https://www.tiktok.com/v2/auth/authorize/?" +
+      `client_key=${encodeURIComponent(TIKTOK_CLIENT_KEY)}` +
+      `&scope=${encodeURIComponent(TIKTOK_OAUTH_SCOPES)}` +
+      `&response_type=code` +
+      `&redirect_uri=${encodeURIComponent(TIKTOK_REDIRECT_URI)}` +
+      `&state=${state}`;
+    res.json({ success: true, url, state, redirectUri: TIKTOK_REDIRECT_URI });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * POST /api/tiktok/exchange - Exchange authorization code for access token, store connection
+ */
+app.post("/api/tiktok/exchange", async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    if (!code) return res.status(400).json({ error: "code is required" });
+    if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) {
+      throw new Error("TikTok client credentials not configured — add TIKTOK_CLIENT_KEY/SECRET to .env");
+    }
+
+    const params = new URLSearchParams();
+    params.set("client_key", TIKTOK_CLIENT_KEY);
+    params.set("client_secret", TIKTOK_CLIENT_SECRET);
+    params.set("code", code);
+    params.set("grant_type", "authorization_code");
+    params.set("redirect_uri", TIKTOK_REDIRECT_URI);
+
+    const tokenRes = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    });
+    const tokenData: any = await tokenRes.json();
+    if (!tokenRes.ok || tokenData.error) {
+      throw new Error(`TikTok token exchange failed: ${tokenData.error?.message || tokenData.error || JSON.stringify(tokenData)}`);
+    }
+    const accessToken = tokenData.access_token;
+    const openId = tokenData.open_id;
+    if (!accessToken) throw new Error("No access_token in TikTok response");
+
+    let username = "";
+    try {
+      const infoRes = await fetch(`${TIKTOK_API_BASE}/user/info/?fields=open_id,union_id,avatar_url,display_name`, {
+        headers: { "Authorization": `Bearer ${accessToken}` },
+      });
+      const infoData: any = await infoRes.json();
+      username = infoData?.data?.user?.display_name || openId || "";
+    } catch (e) {
+      console.warn("[TT-OAUTH] Could not fetch user info:", e);
+    }
+
+    schedulerState.connectedPages.tiktok = {
+      openId,
+      username,
+      clientKey: TIKTOK_CLIENT_KEY,
+      clientSecret: TIKTOK_CLIENT_SECRET,
+      accessToken,
+      refreshToken: tokenData.refresh_token || "",
+      expiresAt: Date.now() + (Number(tokenData.expires_in) || 24 * 3600) * 1000,
+      connected: true,
+    };
+
+    console.log(`[TT-OAUTH] Connected TikTok account: ${username || openId}`);
+    res.json({ success: true, openId, username, scope: tokenData.scope || "" });
+  } catch (err) {
+    console.error("[TT-OAUTH] Exchange error:", err);
     res.status(500).json({ error: (err as Error).message });
   }
 });
