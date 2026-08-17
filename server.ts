@@ -2259,6 +2259,7 @@ app.get('/api/stage', (req, res) => {
   });
   res.json({
     success: true,
+    aiCaptionAvailable: !!process.env.GEMINI_API_KEY,
     items,
     total: items.length,
     selected: items.filter((i) => i.selected).length,

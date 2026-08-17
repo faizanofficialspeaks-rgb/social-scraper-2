@@ -36,6 +36,7 @@ export const ContentStagePanel: React.FC<ContentStagePanelProps> = ({ onNavigate
   const [msg, setMsg] = useState('');
   const [pushResult, setPushResult] = useState<{ instagram: number; facebook: number } | null>(null);
   const [generatingId, setGeneratingId] = useState<string | null>(null);
+  const [aiAvailable, setAiAvailable] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [globalDestination, setGlobalDestination] = useState<'ig' | 'fb' | 'both' | ''>('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -46,7 +47,10 @@ export const ContentStagePanel: React.FC<ContentStagePanelProps> = ({ onNavigate
     try {
       const res = await fetch(`${API_BASE}/api/stage`);
       const data = await res.json();
-      if (data.success) setItems(data.items || []);
+      if (data.success) {
+        setItems(data.items || []);
+        setAiAvailable(!!data.aiCaptionAvailable);
+      }
     } catch {
       /* server down */
     } finally {
@@ -341,12 +345,12 @@ export const ContentStagePanel: React.FC<ContentStagePanelProps> = ({ onNavigate
                   </button>
                   <button
                     onClick={() => generateCaption(item, true)}
-                    disabled={generatingId === item.id}
+                    disabled={generatingId === item.id || !aiAvailable}
                     className="flex items-center gap-1 px-2.5 py-1.5 bg-[#19A76C]/10 hover:bg-[#19A76C]/20 border border-[#19A76C]/40 text-[#0f7a4d] text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50"
-                    title="AI caption (requires GEMINI_API_KEY; falls back to template)"
+                    title={aiAvailable ? 'AI caption (Gemini)' : 'AI captions need GEMINI_API_KEY on the server — see docs/SETUP.md. Template captions still work.'}
                   >
                     {generatingId === item.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-                    AI Caption
+                    AI Caption{!aiAvailable ? ' (no key)' : ''}
                   </button>
                   {item.originalCaption && item.caption !== item.originalCaption && (
                     <button
