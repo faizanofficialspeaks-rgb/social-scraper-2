@@ -1898,10 +1898,24 @@ app.post("/api/facebook/connect", async (req, res) => {
         return res.status(400).json({ error: me.error || "Could not resolve page from token — is this a valid Page Access Token?" });
       }
       if (me.data.first_name || me.data.last_name) {
-        return res.status(400).json({ error: `This token belongs to the personal profile "${me.data.name}" (${me.data.id}), not a Facebook Page. Pages are postable; personal profiles are not. Generate the token for your Page (e.g. Alphaburx) in Graph API Explorer → "Get Page Access Token" → select the PAGE.` });
+        // User token pasted in the page-token field — auto-convert via /me/accounts instead of erroring
+        const accts = await fbGraphGet<{ data: Array<{ id: string; name: string; access_token: string; category?: string }> }>("/me/accounts", token);
+        if (accts.ok && accts.data && accts.data.data && accts.data.data.length) {
+          const pages = accts.data.data;
+          const chosen = pages.find((p) => p.id === pid) || pages[0];
+          userTokenSaved = token;
+          token = chosen.access_token;
+          pid = chosen.id;
+          pname = chosen.name;
+          allPages = pages.map((p) => ({ id: p.id, name: p.name, category: p.category || "" }));
+          console.log(`[FB-POSTER] Auto-converted user token → page token for ${pname} (${pid})`);
+        } else {
+          return res.status(400).json({ error: `This token belongs to the personal profile "${me.data.name}" (${me.data.id}) and has no manageable pages. Generate a token for your Page (e.g. Alphaburx) in Graph API Explorer → "Get Page Access Token" → select the PAGE, or paste your User Access Token in the "User Token" field instead.` });
+        }
+      } else {
+        pid = me.data.id;
+        pname = pname || me.data.name || "";
       }
-      pid = me.data.id;
-      pname = pname || me.data.name || "";
     }
     if (!pname) {
       const check = await fbGraphGet<{ id: string; name: string }>(`/${pid}?fields=id,name`, token);
