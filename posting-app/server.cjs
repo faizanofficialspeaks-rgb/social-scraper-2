@@ -39,6 +39,68 @@ app.get('/api/fb/status', requireUser, async (req, res) => {
   res.json({ connected: !!(data?.fb_page_id), page: data?.fb_page_id ? { id: data.fb_page_id, name: data.fb_page_name } : null });
 });
 
+const fs = require('fs');
+const crypto = require('crypto');
+const multer = require('multer');
+
+const UPLOAD_ROOT = path.join(__dirname, 'uploads');
+fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = path.join(UPLOAD_ROOT, req.user.id);
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`),
+});
+const upload = multer({ storage, limits: { fileSize: 500 * 1024 * 1024 } });
+
+function sha256File(p) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const s = fs.createReadStream(p);
+    s.on('data', d => h.update(d));
+    s.on('end', () => resolve(h.digest('hex')));
+    s.on('error', reject);
+  });
+}
+
+app.post('/api/upload', requireUser, upload.fields([{ name: 'files', maxCount: 200 }, { name: 'metadata', maxCount: 1 }]), async (req, res) => {
+  const uploaded = (req.files?.files || []);
+  const files = uploaded.filter(f => /\.mp4$/i.test(f.originalname));
+  const skipped = uploaded.filter(f => !/\.mp4$/i.test(f.originalname)).map(f => f.originalname);
+  let captionMap = {};
+  const metaFile = req.files?.metadata?.[0];
+  const metaText = metaFile ? fs.readFileSync(metaFile.path, 'utf8') : String(req.body.metadata || '');
+  try { captionMap = JSON.parse(metaText.replace(/^\uFEFF/, '')); } catch { /* ignore bad metadata */ }
+  const rows = [];
+  const duplicates = [];
+  for (const f of files) {
+    const file_hash = await sha256File(f.path);
+    const caption = String(captionMap[f.originalname] || captionMap[f.originalname.toLowerCase()] || '').slice(0, 2200);
+    const { data, error } = await admin
+      .from('post_queue')
+      .insert({ user_id: req.user.id, file_hash, file_name: f.originalname, caption })
+      .select()
+      .maybeSingle();
+    if (error) {
+      if (error.code === '23505') {
+        fs.unlinkSync(f.path);
+        duplicates.push(f.originalname);
+        continue;
+      }
+      fs.unlinkSync(f.path);
+      return res.status(500).json({ error: error.message });
+    }
+    const dir = path.join(UPLOAD_ROOT, req.user.id);
+    const stored = path.join(dir, `${data.id}.mp4`);
+    fs.renameSync(f.path, stored);
+    rows.push(data);
+  }
+  res.json({ rows, skipped, duplicates });
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 8000;
