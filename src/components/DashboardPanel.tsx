@@ -1,16 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  BarChart2, Download, Send, LibraryBig, Loader2, TrendingUp, TrendingDown, Clock, Zap, Radio,
+  BarChart2, Download, Loader2, Radio, Facebook, ExternalLink,
 } from 'lucide-react';
 import { API_BASE } from '../lib/apiBase';
 import type { AppTab } from './Sidebar';
 
 interface DashboardData {
   success: boolean;
-  month: { scraped: number; published: number; failed: number; downloads: number };
-  queueHealth: { queued: number; publishing: number; scheduled: number };
-  perPlatform: { instagram: number; facebook: number; stage: Record<string, number> };
-  timeSeries: Array<{ date: string; scraped: number; published: number; failed: number; downloads: number }>;
+  month: { scraped: number; downloads: number };
+  timeSeries: Array<{ date: string; scraped: number; downloads: number }>;
 }
 
 interface DashboardPanelProps {
@@ -57,10 +55,10 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ onNavigate, onDo
   }, [fetchAll]);
 
   const series = data?.timeSeries || [];
-  const maxVal = Math.max(1, ...series.map((s) => Math.max(s.scraped, s.published, s.failed, s.downloads)));
+  const maxVal = Math.max(1, ...series.map((s) => Math.max(s.scraped, s.downloads)));
   const W = 600;
   const H = 140;
-  const pts = (key: 'scraped' | 'published' | 'failed' | 'downloads', color: string) => {
+  const pts = (key: 'scraped' | 'downloads', color: string) => {
     if (series.length < 2) return null;
     const stepX = W / (series.length - 1);
     const coords = series.map((s, i) => ({
@@ -70,7 +68,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ onNavigate, onDo
     const path = coords.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
     return { path, color };
   };
-  const lines = [pts('scraped', '#19A76C'), pts('published', '#FF6321'), pts('failed', '#dc2626'), pts('downloads', '#1877F2')].filter(Boolean) as Array<{ path: string; color: string }>;
+  const lines = [pts('scraped', '#19A76C'), pts('downloads', '#1877F2')].filter(Boolean) as Array<{ path: string; color: string }>;
 
   return (
     <div className="space-y-8">
@@ -85,7 +83,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ onNavigate, onDo
         </div>
         <h2 className="font-serif text-3xl font-normal tracking-tight text-[#1A1A1A]">Dashboard</h2>
         <p className="text-sm text-[#1A1A1A]/60 mt-1 font-sans">
-          Scrapes, publishes, downloads and queue health — refreshed automatically.
+          Scrapes and downloads — refreshed automatically.
         </p>
       </div>
 
@@ -102,45 +100,21 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ onNavigate, onDo
               <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">Scraped this month</span>
             </div>
             <div className={CARD}>
-              {metricIcon(<Send className="w-4 h-4" />, 'text-[#19A76C] border-[#19A76C]/40')}
-              <span className="text-2xl font-mono font-bold text-[#1A1A1A]">{data?.month.published ?? 0}</span>
-              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">Published (IG+FB)</span>
-            </div>
-            <div className={CARD}>
-              {metricIcon(<TrendingDown className="w-4 h-4" />, 'text-red-600 border-red-300')}
-              <span className="text-2xl font-mono font-bold text-[#1A1A1A]">{data?.month.failed ?? 0}</span>
-              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">Failed posts</span>
-            </div>
-            <div className={CARD}>
               {metricIcon(<Download className="w-4 h-4" />, 'text-[#1877F2] border-[#1877F2]/40')}
               <span className="text-2xl font-mono font-bold text-[#1A1A1A]">{data?.month.downloads ?? 0}</span>
               <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">Downloads</span>
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className={CARD}>
-              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">Credits</span>
+              {metricIcon(<BarChart2 className="w-4 h-4" />, 'text-[#19A76C] border-[#19A76C]/40')}
               <span className="text-2xl font-mono font-bold text-[#1A1A1A]">
                 {credits === null ? '—' : credits}
               </span>
-              <span className="text-[10px] font-mono text-[#1A1A1A]/40">remaining · 1 video = 1 credit</span>
+              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">Credits left</span>
             </div>
             <div className={CARD}>
-              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">Queue health</span>
-              <div className="flex items-center gap-3 flex-wrap text-[11px] font-mono font-bold">
-                <span className="flex items-center gap-1 text-[#1A1A1A]/70"><Clock className="w-3 h-3" /> {data?.queueHealth.queued ?? 0} scheduled</span>
-                <span className="flex items-center gap-1 text-amber-600"><Zap className="w-3 h-3" /> {data?.queueHealth.publishing ?? 0} publishing</span>
-              </div>
-              <span className="text-[10px] font-mono text-[#1A1A1A]/40">{data?.queueHealth.scheduled ?? 0} total in queue</span>
-            </div>
-            <div className={CARD}>
-              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">Platform split (month)</span>
-              <div className="flex items-center gap-3 text-[11px] font-mono font-bold">
-                <span className="flex items-center gap-1 text-[#FF6321]"><TrendingUp className="w-3 h-3" /> IG {data?.perPlatform.instagram ?? 0}</span>
-                <span className="flex items-center gap-1 text-[#1877F2]"><TrendingUp className="w-3 h-3" /> FB {data?.perPlatform.facebook ?? 0}</span>
-              </div>
-              <span className="text-[10px] font-mono text-[#1A1A1A]/40">IG stage: {data?.perPlatform.stage?.instagram ?? 0} · TT: {data?.perPlatform.stage?.tiktok ?? 0} · FB: {data?.perPlatform.stage?.facebook ?? 0}</span>
+              {metricIcon(<Facebook className="w-4 h-4" />, 'text-[#1877F2] border-[#1877F2]/40')}
+              <span className="text-2xl font-mono font-bold text-[#1A1A1A]">24/7</span>
+              <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#1A1A1A]/50">FB posting — alag app</span>
             </div>
           </div>
 
@@ -151,8 +125,6 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ onNavigate, onDo
               </h3>
               <div className="flex items-center gap-3 text-[9px] font-bold uppercase tracking-wider text-[#1A1A1A]/50">
                 <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#19A76C] inline-block" /> scraped</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#FF6321] inline-block" /> published</span>
-                <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-red-600 inline-block" /> failed</span>
                 <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#1877F2] inline-block" /> downloads</span>
               </div>
             </div>
@@ -164,7 +136,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ onNavigate, onDo
               </svg>
             ) : (
               <div className="py-10 text-center text-sm text-[#1A1A1A]/40 font-sans">
-                Not enough data yet — scrape or post something and check back.
+                Not enough data yet — scrape or download something and check back.
               </div>
             )}
           </section>
@@ -177,16 +149,16 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ onNavigate, onDo
               <Radio className="w-4 h-4" /> Start Scraping
             </button>
             <button
-              onClick={() => onNavigate('stage')}
-              className="flex items-center justify-center gap-2 px-4 py-3 bg-[#19A76C] text-white hover:bg-[#148a59] font-sans text-[11px] uppercase tracking-[0.2em] font-bold transition-colors cursor-pointer"
+              onClick={() => onNavigate('tiktok')}
+              className="flex items-center justify-center gap-2 px-4 py-3 bg-[#1A1A1A] text-white hover:bg-black font-sans text-[11px] uppercase tracking-[0.2em] font-bold transition-colors cursor-pointer"
             >
-              <LibraryBig className="w-4 h-4" /> Content Stage
+              <Radio className="w-4 h-4" /> TikTok
             </button>
             <button
-              onClick={() => onNavigate('queue')}
-              className="flex items-center justify-center gap-2 px-4 py-3 bg-[#FF6321] text-white hover:bg-[#e5541a] font-sans text-[11px] uppercase tracking-[0.2em] font-bold transition-colors cursor-pointer"
+              onClick={() => onNavigate('facebook')}
+              className="flex items-center justify-center gap-2 px-4 py-3 bg-[#1A1A1A] text-white hover:bg-black font-sans text-[11px] uppercase tracking-[0.2em] font-bold transition-colors cursor-pointer"
             >
-              <Zap className="w-4 h-4" /> Open Queue
+              <Facebook className="w-4 h-4" /> Facebook
             </button>
             <button
               onClick={onDownloadZip}
@@ -195,6 +167,11 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({ onNavigate, onDo
             >
               {isZipping ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Extension ZIP
             </button>
+          </div>
+
+          <div className="flex items-center gap-2 px-4 py-3 border border-[#19A76C]/30 bg-[#19A76C]/5 text-[11px] text-[#1A1A1A]/70 font-sans">
+            <ExternalLink className="w-3.5 h-3.5 text-[#19A76C]" />
+            Facebook posting (queue + auto-post) ab alag app mein hai — <span className="font-bold">posting-app</span> folder, cloud-hosted 24/7. Is app ka kaam sirf scrape + download hai.
           </div>
         </>
       )}

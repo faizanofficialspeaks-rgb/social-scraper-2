@@ -3,19 +3,13 @@ services:
     name: social-scraper
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build && python3 -m pip install -r requirements.txt
+    buildCommand: npm install && npm run build
     startCommand: npm start
-    healthCheckPath: /api/publish/status
+    healthCheckPath: /api/health
     autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DATA_DIR
-        value: /data
-      - key: PYTHON_BIN
-        value: python3
-      - key: GEMINI_API_KEY
-        sync: false
       # --- Supabase (fill values in Render dashboard after deploy) ---
       # Server-side (secrets):
       - key: SUPABASE_URL

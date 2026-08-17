@@ -1,7 +1,7 @@
 import React from 'react';
-import { Radio, Send, Facebook, Layers, LibraryBig, Cog, BarChart2 } from 'lucide-react';
+import { Radio, Facebook, Cog, BarChart2, ExternalLink } from 'lucide-react';
 
-export type AppTab = 'dashboard' | 'instagram' | 'tiktok' | 'facebook' | 'stage' | 'queue' | 'fbqueue' | 'setup';
+export type AppTab = 'dashboard' | 'instagram' | 'tiktok' | 'facebook' | 'setup';
 
 interface SidebarProps {
   activeTab: AppTab;
@@ -36,21 +36,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
         { id: 'instagram', label: 'Instagram', icon: <Radio className="w-4 h-4" />, color: 'text-[#FF6321]' },
         { id: 'tiktok', label: 'TikTok', icon: <Radio className="w-4 h-4" />, color: 'text-[#FF0050]' },
         { id: 'facebook', label: 'Facebook', icon: <Facebook className="w-4 h-4" />, color: 'text-[#1877F2]' },
-      ],
-    },
-    {
-      step: '2',
-      title: 'Curate',
-      items: [
-        { id: 'stage', label: 'Content Stage', icon: <LibraryBig className="w-4 h-4" />, color: 'text-[#19A76C]' },
-      ],
-    },
-    {
-      step: '3',
-      title: 'Queue & Post',
-      items: [
-        { id: 'queue', label: 'Unified Queue', icon: <Send className="w-4 h-4" />, color: 'text-[#19A76C]' },
-        { id: 'fbqueue', label: 'Facebook Only', icon: <Send className="w-4 h-4" />, color: 'text-[#1877F2]' },
       ],
     },
     {
@@ -112,11 +97,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => 
 
         <div className="hidden md:block mt-2 pt-4 border-t border-[#1A1A1A]/10">
           <div className="flex items-center gap-2 px-3 text-[9px] uppercase tracking-[0.2em] text-[#1A1A1A]/40 font-bold">
-            <Layers className="w-3 h-3" />
-            Workflow
+            <ExternalLink className="w-3 h-3" />
+            Poster App
           </div>
           <p className="px-3 mt-2 text-[10px] leading-relaxed text-[#1A1A1A]/40 font-sans normal-case tracking-normal">
-            Scrape → Curate (Stage) → Queue &amp; Auto-Post. Dashboard shows your month at a glance.
+            Facebook posting (queue + auto-post) ab alag app hai — posting-app/ folder, cloud-hosted. Is app ka kaam sirf scrape + download hai.
           </p>
         </div>
       </nav>

@@ -62,16 +62,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenDashboard }) => 
                 Scrape the feed.
                 <br />
                 <span className="italic bg-gradient-to-r from-[#ccff00] to-white bg-clip-text text-transparent">
-                  Curate
+                  Download
                 </span>{' '}
                 the best.
                 <br />
                 Auto-post
-                <span className="italic text-[#ccff00]"> everywhere.</span>
+                <span className="italic text-[#ccff00]"> on Facebook.</span>
               </h1>
               <p className="mt-8 max-w-xl text-lg text-white/60 leading-relaxed">
-                Real-time multi-platform scraping, a curated content stage, and a scheduler that
-                posts to Instagram &amp; Facebook via Graph API — one connected pipeline.
+                Real-time multi-platform scraping + one-click downloads, and a separate
+                cloud-hosted poster app that auto-posts to Facebook 24/7 — even when your PC is off.
               </p>
               <div className="mt-10 flex flex-wrap items-center gap-4">
                 <button
@@ -193,21 +193,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenDashboard }) => 
                 <Zap className="w-7 h-7" />
                 <div className="text-2xl font-bold tracking-tight mt-4">Auto-Poster</div>
                 <p className="text-sm mt-2 leading-relaxed">
-                  Instagram &amp; Facebook via Graph API — scheduler runs 24/7 on your VPS. No sessions, no bans.
+                  Facebook via Graph API — separate cloud app, scheduler runs 24/7 in the cloud. Even when your PC is off.
                 </p>
-                <div className="mt-6 landing-mono text-[10px] uppercase tracking-[0.15em] font-bold">IG ✓ FB ✓</div>
+                <div className="mt-6 landing-mono text-[10px] uppercase tracking-[0.15em] font-bold">FB ✓ Cloud ✓</div>
               </div>
 
               {/* Standard cards */}
               <div className="rounded-[2.5rem] border border-white/10 p-7 hover:border-[#ccff00]/40 transition-colors bg-[#0a0a0a]">
                 <Layers className="w-6 h-6 text-[#ccff00]" />
-                <div className="text-xl font-bold tracking-tight mt-4">Content Stage</div>
-                <p className="text-sm text-white/50 mt-2 leading-relaxed">Select, reorder, caption &amp; tag — then push to the queue.</p>
+                <div className="text-xl font-bold tracking-tight mt-4">One-Click Downloads</div>
+                <p className="text-sm text-white/50 mt-2 leading-relaxed">Direct MP4 saves, ZIP packages, JSON/CSV export — zero duplicates.</p>
               </div>
               <div className="rounded-[2.5rem] border border-white/10 p-7 hover:border-[#ccff00]/40 transition-colors bg-[#0a0a0a]">
                 <Send className="w-6 h-6 text-[#ccff00]" />
-                <div className="text-xl font-bold tracking-tight mt-4">Smart Queue</div>
-                <p className="text-sm text-white/50 mt-2 leading-relaxed">Per-post platform control — IG or FB, scheduled or now.</p>
+                <div className="text-xl font-bold tracking-tight mt-4">Folder Queue</div>
+                <p className="text-sm text-white/50 mt-2 leading-relaxed">Drop your extracted ZIP folder — captions auto-import, schedule or post now.</p>
               </div>
               <div className="rounded-[2.5rem] border border-white/10 p-7 hover:border-[#ccff00]/40 transition-colors bg-[#0a0a0a]">
                 <Archive className="w-6 h-6 text-[#ccff00]" />
@@ -217,7 +217,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenDashboard }) => 
               <div className="rounded-[2.5rem] border border-white/10 p-7 hover:border-[#ccff00]/40 transition-colors bg-[#0a0a0a]">
                 <Facebook className="w-6 h-6 text-[#ccff00]" />
                 <div className="text-xl font-bold tracking-tight mt-4">Page Connect</div>
-                <p className="text-sm text-white/50 mt-2 leading-relaxed">One Meta app token drives both Facebook Page &amp; Instagram business.</p>
+                <p className="text-sm text-white/50 mt-2 leading-relaxed">Paste one token in the poster app — it converts to a long-lived page token automatically.</p>
               </div>
             </div>
           </section>
@@ -235,8 +235,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenDashboard }) => 
             <div className="grid md:grid-cols-3 gap-10">
               {[
                 { n: '01', t: 'Scrape', d: 'Live stream real posts, reels & carousels from any public account — Instagram, TikTok or Facebook.' },
-                { n: '02', t: 'Curate', d: 'Stage the winners, fix captions, add hashtags, set the order — everything visual, nothing manual.' },
-                { n: '03', t: 'Schedule & Post', d: 'Per-post platform choice, queue it, and the 24/7 scheduler publishes via Graph API.' },
+                { n: '02', t: 'Download', d: 'One-click media saves with dedup — videos, images, ZIPs, JSON/CSV export.' },
+                { n: '03', t: 'Auto-Post', d: 'Drop the folder in the cloud poster app — captions auto-import, schedule or post now, 24/7.' },
               ].map((s) => (
                 <div key={s.n} className="border-t border-black/15 pt-6">
                   <div className="w-12 h-12 rounded-full bg-black text-white flex items-center justify-center landing-mono text-sm font-bold mb-5">

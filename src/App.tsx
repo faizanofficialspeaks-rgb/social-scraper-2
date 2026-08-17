@@ -9,9 +9,7 @@ import { PanelSimulator } from './components/PanelSimulator';
 import { TestingGuide } from './components/TestingGuide';
 import { RealtimeStreamDashboard } from './components/RealtimeStreamDashboard';
 import { ConfigurationPanelModal } from './components/ConfigurationPanelModal';
-import { ContentStagePanel } from './components/ContentStagePanel';
 import { DashboardPanel } from './components/DashboardPanel';
-import { QueuePanel } from './components/QueuePanel';
 import { LandingPage } from './components/LandingPage';
 import { AuthPage } from './components/AuthPage';
 import { AccountPanel } from './components/AccountPanel';
@@ -57,7 +55,7 @@ function AppCore() {
 
   useEffect(() => {
     if (view === 'app' && !authed && !loading) setView('auth');
-    if (view === 'app' && authed && !['dashboard', 'instagram', 'tiktok', 'facebook', 'stage', 'queue', 'fbqueue', 'setup'].includes(activeTab)) setActiveTab('dashboard');
+    if (view === 'app' && authed && !['dashboard', 'instagram', 'tiktok', 'facebook', 'setup'].includes(activeTab)) setActiveTab('dashboard');
   }, [authed, loading, view, activeTab]);
 
   // Dynamic 1-Click Chrome Extension ZIP Packager
@@ -203,30 +201,9 @@ const AppInner: React.FC<AppInnerProps> = ({
               isZipping={isZipping}
             />
           )}
-          {activeTab === 'instagram' && <RealtimeStreamDashboard key="instagram" defaultPlatform="instagram" onPlatformChange={setActiveTab as any} onDownloadZip={handleDownloadZip} onNavigate={setActiveTab} />}
-          {activeTab === 'tiktok' && <RealtimeStreamDashboard key="tiktok" defaultPlatform="tiktok" onPlatformChange={setActiveTab as any} onDownloadZip={handleDownloadZip} onNavigate={setActiveTab} />}
-          {activeTab === 'facebook' && <RealtimeStreamDashboard key="facebook" defaultPlatform="facebook" onPlatformChange={setActiveTab as any} onDownloadZip={handleDownloadZip} onNavigate={setActiveTab} />}
-          {activeTab === 'stage' && (
-            <div className="space-y-8">
-              <div>
-                <div className="flex items-center gap-3 mb-1">
-                  <span className="text-[10px] font-mono font-bold uppercase tracking-[0.2em] text-[#19A76C] border border-[#19A76C]/40 bg-[#19A76C]/10 px-2 py-1">
-                    Step 2 · Curate
-                  </span>
-                  <span className="text-[10px] font-mono font-bold uppercase tracking-[0.2em] text-[#1A1A1A]/40">
-                    Edit posts from Step 1 (Scrape) → send to Step 3 (Queue)
-                  </span>
-                </div>
-                <h2 className="font-serif text-3xl font-normal tracking-tight text-[#1A1A1A]">Content Stage</h2>
-                <p className="text-sm text-[#1A1A1A]/60 mt-1 font-sans">
-                  Scraped posts are auto-collected here. Select, reorder, fix captions and tags, choose where to post, then push to the queue.
-                </p>
-              </div>
-              <ContentStagePanel onNavigate={setActiveTab} />
-            </div>
-          )}
-          {activeTab === 'queue' && <QueuePanel platformFilter="all" />}
-          {activeTab === 'fbqueue' && <QueuePanel platformFilter="facebook" />}
+          {activeTab === 'instagram' && <RealtimeStreamDashboard key="instagram" defaultPlatform="instagram" onPlatformChange={setActiveTab as any} onDownloadZip={handleDownloadZip} />}
+          {activeTab === 'tiktok' && <RealtimeStreamDashboard key="tiktok" defaultPlatform="tiktok" onPlatformChange={setActiveTab as any} onDownloadZip={handleDownloadZip} />}
+          {activeTab === 'facebook' && <RealtimeStreamDashboard key="facebook" defaultPlatform="facebook" onPlatformChange={setActiveTab as any} onDownloadZip={handleDownloadZip} />}
           {activeTab === 'setup' && (
             <div className="space-y-12">
               <AccountPanel />
