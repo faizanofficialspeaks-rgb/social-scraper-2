@@ -2,6 +2,7 @@
 import express from "express";
 import path from "path";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer as createViteServer } from "vite";
 
@@ -965,12 +966,13 @@ interface PublishItem {
   postUrl?: string;
   error?: string;
   idempotencyKey?: string;
+  destination?: 'ig' | 'fb' | 'both';
+  schedulingMode?: 'auto' | 'manual';
 }
 
 let publishQueue: Map<string, PublishItem> = new Map();
 
 function generateIdempotencyKey(shortcode: string, mediaUrl: string, platform: string): string {
-  const { createHash } = require("node:crypto");
   return createHash("sha256").update(`${shortcode}|${mediaUrl}|${platform}`).digest("hex").slice(0, 32);
 }
 
@@ -2046,13 +2048,14 @@ app.get('/api/stage', (req, res) => {
 
 app.post('/api/stage/update', (req, res) => {
   try {
-    const { id, caption, tags, selected, order } = req.body || {};
+    const { id, caption, tags, selected, order, destination } = req.body || {};
     const item = contentStage.get(id);
     if (!item) return res.status(404).json({ error: 'Stage item not found' });
     if (typeof caption === 'string') item.caption = caption;
     if (Array.isArray(tags)) item.tags = tags.filter((t) => typeof t === 'string').slice(0, 30);
     if (typeof selected === 'boolean') item.selected = selected;
     if (typeof order === 'number') item.order = Math.max(0, Math.floor(order));
+    if (['ig', 'fb', 'both'].includes(destination)) item.destination = destination;
     saveContentStage();
     res.json({ success: true, item });
   } catch (err) {
@@ -2125,50 +2128,77 @@ app.post('/api/stage/tags', (req, res) => {
   }
 });
 
-app.post('/api/stage/push-to-queue', (req, res) => {
+app.post('/api/stage/push-to-queue', async (req, res) => {
   try {
-    const { scheduledAt } = req.body || {};
+    const { scheduledAt, destination: globalDestination } = req.body || {};
     const selected = Array.from(contentStage.values())
       .filter((i) => i.selected && i.status === 'new')
       .sort((a, b) => (a.order || 9999) - (b.order || 9999));
     if (!selected.length) return res.status(400).json({ error: 'No selected stage items to push' });
+    const destOf = (i: StageItem): 'ig' | 'fb' | 'both' =>
+      (globalDestination || i.destination || (i.platform === 'facebook' ? 'fb' : 'ig')) as 'ig' | 'fb' | 'both';
     const fbSession = loadFacebookPosterSession();
-    const wantsFb = selected.some((i) => i.platform === 'facebook');
-    if (wantsFb && !fbSession) {
-      return res.status(400).json({ error: 'Selected items include Facebook posts but no Facebook page is connected — connect a page first' });
+    const fbToken = fbSession ? await checkFacebookToken() : { valid: false };
+    const igSession = loadInstagramPosterSession();
+    const wantsFb = selected.some((i) => ['fb', 'both'].includes(destOf(i)));
+    if (wantsFb && (!fbSession || !fbToken.valid)) {
+      return res.status(400).json({ error: 'Selected items include Facebook destinations but the Facebook page token is missing or expired — reconnect in the Queue tab first' });
+    }
+    const wantsIg = selected.some((i) => ['ig', 'both'].includes(destOf(i)));
+    if (wantsIg && !igSession) {
+      return res.status(400).json({ error: 'Selected items include Instagram destinations but no Instagram account is connected — connect one in the Queue tab first' });
     }
     const base = scheduledAt ? Number(scheduledAt) : Date.now() + 60 * 1000;
     const GAP_MS = 30 * 60 * 1000;
     const pushed: string[] = [];
+    const duplicates: Array<{ shortcode: string; platform: string; existingId: string; scheduledAt: number }> = [];
     let igCount = 0;
     let fbCount = 0;
     for (let idx = 0; idx < selected.length; idx++) {
       const item = selected[idx];
-      const id = `post_${item.shortcode || 'media'}_${Date.now()}_${idx}`;
-      const caption = (item.caption || '').trim();
-      const targetPlatform = item.platform === 'facebook' ? 'facebook' : 'instagram';
-      if (targetPlatform === 'facebook') fbCount++;
-      else igCount++;
-      publishQueue.set(id, {
-        id,
-        shortcode: item.shortcode || 'media',
-        mediaUrl: item.mediaUrl,
-        caption,
-        type: item.type,
-        reel: true,
-        platform: targetPlatform,
-        scheduledAt: base + idx * GAP_MS,
-        status: 'queued',
-        attempts: 0,
-      });
+      const dest = destOf(item);
+      const targets: Array<'instagram' | 'facebook'> =
+        dest === 'both' ? ['instagram', 'facebook'] : [dest === 'fb' ? 'facebook' : 'instagram'];
+      for (const t of targets) {
+        const dupKey = generateIdempotencyKey(item.shortcode || 'media', item.mediaUrl, t);
+        const dup = findByIdempotencyKey(dupKey);
+        if (dup) {
+          duplicates.push({ shortcode: item.shortcode || 'media', platform: t, existingId: dup.id, scheduledAt: dup.scheduledAt });
+          continue;
+        }
+        const id = `post_${item.shortcode || 'media'}_${Date.now()}_${idx}_${t}`;
+        publishQueue.set(id, {
+          id,
+          shortcode: item.shortcode || 'media',
+          mediaUrl: item.mediaUrl,
+          caption: (item.caption || '').trim(),
+          type: item.type,
+          reel: true,
+          platform: t,
+          destination: dest,
+          scheduledAt: base + pushed.length * GAP_MS,
+          status: 'queued',
+          attempts: 0,
+        });
+        if (t === 'facebook') fbCount++;
+        else igCount++;
+        pushed.push(id);
+      }
       item.status = 'queued';
       item.selected = false;
-      pushed.push(id);
     }
     savePublishQueue();
     saveContentStage();
     console.log(`[STAGE] Pushed ${pushed.length} staged posts into publish queue`);
-    res.json({ success: true, pushed, queued: { instagram: igCount, facebook: fbCount }, message: `Pushed ${pushed.length} posts to queue (${GAP_MS / 60000} min apart)` });
+    res.json({
+      success: true,
+      pushed,
+      duplicates,
+      queued: { instagram: igCount, facebook: fbCount },
+      message: duplicates.length
+        ? `Pushed ${pushed.length} posts to queue (${GAP_MS / 60000} min apart) · ${duplicates.length} already-queued duplicates skipped`
+        : `Pushed ${pushed.length} posts to queue (${GAP_MS / 60000} min apart)`,
+    });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
