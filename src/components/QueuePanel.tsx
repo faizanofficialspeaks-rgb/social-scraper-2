@@ -963,11 +963,11 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({ platformFilter = 'all' }
                 </div>
               </div>
 
-              {status.facebookPages && status.facebookPages.length > 1 && (
+              {status.facebookPages && status.facebookPages.length >= 1 && (
                 <div className="mt-6 border-t border-[#1A1A1A]/10 pt-4">
                   <div className="flex items-center justify-between mb-3">
                     <h4 className="font-sans text-[11px] uppercase tracking-[0.2em] font-bold text-[#1A1A1A]/60">
-                      All Pages ({status.facebookPages.length})
+                      Connected Pages ({status.facebookPages.length})
                     </h4>
                     <span className="text-[10px] text-[#1A1A1A]/40 font-sans uppercase tracking-wider">
                       switch the active posting page
@@ -1123,6 +1123,15 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({ platformFilter = 'all' }
             </div>
           </div>
 
+          {queuePlatform === 'facebook' && (
+            <div className="flex items-center gap-2 px-4 py-3 bg-[#1877F2]/5 border border-[#1877F2]/30 text-[12px] font-mono text-[#0f62c9]">
+              <Facebook className="w-3.5 h-3.5 shrink-0" />
+              {status?.facebookConnected
+                ? <>Will post to: <strong>{status.facebookPageName || status.facebookPageId}</strong></>
+                : 'No Facebook page connected — connect one above first.'}
+            </div>
+          )}
+
           <button
             onClick={queuePost}
             disabled={queueing}
@@ -1147,7 +1156,7 @@ export const QueuePanel: React.FC<QueuePanelProps> = ({ platformFilter = 'all' }
               <span className="px-2 py-1 bg-emerald-50 text-emerald-700 border border-emerald-300">{status.stats.posted} posted</span>
               <span className="px-2 py-1 bg-amber-50 text-amber-700 border border-amber-300">{status.stats.pending} pending</span>
               <span className="px-2 py-1 bg-red-50 text-red-700 border border-red-300">{status.stats.failed} failed</span>
-              <span className="px-2 py-1 bg-[#F5F2ED] text-[#1A1A1A]/60 border border-[#1A1A1A]/15">IG {igItems.length} · FB {fbItems.length}</span>
+              <span className="px-2 py-1 bg-[#F5F2ED] text-[#1A1A1A]/60 border border-[#1A1A1A]/15">IG {igItems.length} · FB {fbItems.length}{status?.facebookConnected && fbItems.length > 0 ? ` → ${status.facebookPageName || status.facebookPageId}` : ''}</span>
             </div>
           )}
         </div>

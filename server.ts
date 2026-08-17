@@ -1191,12 +1191,51 @@ async function publishToFacebook(item: PublishItem, mediaBuffer: Buffer): Promis
 
   if (item.type === 'video') {
     if (item.reel) {
-      uploadPath = `/${fb.pageId}/reels`;
+      uploadPath = `/${fb.pageId}/video_reels`;
     } else {
       uploadPath = `/${fb.pageId}/videos`;
     }
   } else {
     uploadPath = `/${fb.pageId}/photos`;
+  }
+
+  if (item.type === 'video' && item.reel) {
+    // Facebook Reels: 3-phase upload (start → binary PUT to upload_url → finish)
+    try {
+      const start = await fbGraphPost<{ video_id?: string; upload_url?: string }>(
+        `/${fb.pageId}/video_reels`, fb.accessToken, { upload_phase: 'start' }
+      );
+      if (!start.ok || !start.data?.upload_url || !start.data?.video_id) {
+        return { ok: false, message: start.error || 'Could not start reel upload (upload_phase=start)' };
+      }
+      const putRes = await fetch(start.data.upload_url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'video/mp4',
+          'Authorization': `OAuth ${fb.accessToken}`,
+          'offset': '0',
+          'file_size': String(mediaBuffer.length),
+        },
+        body: Buffer.isBuffer(mediaBuffer) ? mediaBuffer : new Blob([mediaBuffer], { type: 'video/mp4' }),
+      });
+      if (!putRes.ok) {
+        return { ok: false, message: `Reel binary upload failed (HTTP ${putRes.status})` };
+      }
+      const finish = await fbGraphPost<{ id?: string; post_id?: string }>(
+        `/${fb.pageId}/video_reels`, fb.accessToken, {
+          upload_phase: 'finish',
+          video_id: start.data.video_id,
+          title: (item.caption || '').slice(0, 500) || 'Shared via SocialScraper',
+        }
+      );
+      const finishId = finish.data?.id || finish.data?.post_id;
+      if (!finish.ok || !finishId) {
+        return { ok: false, message: finish.error || 'Could not finish reel upload (upload_phase=finish)' };
+      }
+      return { ok: true, url: `https://www.facebook.com/reel/${finishId}`, message: 'Posted reel to Facebook' };
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
   }
 
   if (item.type === 'video') {
@@ -1212,9 +1251,7 @@ async function publishToFacebook(item: PublishItem, mediaBuffer: Buffer): Promis
       } else {
         body.video_url = item.mediaUrl;
       }
-      const result = item.reel
-        ? await fbGraphPost<{ id: string }>(uploadPath, fb.accessToken, body)
-        : await fbGraphPost<{ id: string }>(uploadPath, fb.accessToken, body);
+      const result = await fbGraphPost<{ id: string }>(uploadPath, fb.accessToken, body);
       if (result.ok) {
         return { ok: true, url: `https://www.facebook.com/${fb.pageId}/posts/${result.data?.id || ''}`, message: "Posted to Facebook" };
       }
