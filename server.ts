@@ -1,208 +1,81 @@
-import "dotenv/config";
-import { createHash, randomBytes } from "node:crypto";
-import fs from "node:fs";
+﻿import "dotenv/config";
 import express from "express";
 import path from "path";
+import fs from "node:fs";
+import { spawn } from "node:child_process";
 import { createServer as createViteServer } from "vite";
-
-// AI Caption Generation
-interface CaptionRequest {
-  platform: 'instagram' | 'tiktok' | 'facebook';
-  mediaType: 'video' | 'image' | 'carousel';
-  shortcode: string;
-  existingCaption?: string;
-}
-
-interface CaptionResult {
-  caption: string;
-  hashtags: string[];
-}
-
-// AI service configuration
-const AI_SERVICE = process.env.AI_SERVICE || 'gemini'; // gemini | grok | ollama | openai
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const GROK_API_KEY = process.env.GROK_API_KEY || '';
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gpt-oss:120b';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-
-// Unified AI caption generation entry point
-async function generateCaption(req: CaptionRequest): Promise<CaptionResult> {
-  const { platform, mediaType, shortcode, existingCaption } = req;
-
-  const context = `
-    You are a professional social media content strategist.
-    Generate an engaging ${platform} post caption for the following media. Do NOT use markdown, bold, or asterisks.
-    Platform: ${platform}
-    Media type: ${mediaType || 'video'}
-    Shortcode: ${shortcode}
-    ${existingCaption ? `Existing caption (use as context, enhance/rewrite it naturally): "${existingCaption}"` : 'No existing caption available.'}
-
-    Requirements:
-    - Write a natural, conversational, engaging caption (3-6 sentences max).
-    - The tone must fit ${platform} (Instagram: aesthetic/inspirational; TikTok: casual/trendy; Facebook: community/friendly).
-    - End the caption with a call-to-action.
-    - Then on a NEW line, list 5-12 relevant hashtags, each separated by a space, prefixed with #.
-    - Do not include any other text, labels, or explanations.
-  `;
-
-  // Try configured AI service first, then fall back through others
-  const attempts: Array<() => Promise<CaptionResult>> = [];
-
-  if (AI_SERVICE === 'gemini') {
-    attempts.push(() => generateWithGemini(context, platform));
-    if (GROK_API_KEY) attempts.push(() => generateWithGrok(context, platform));
-    if (OLLAMA_BASE_URL) attempts.push(() => generateWithOllama(context, platform));
-  } else if (AI_SERVICE === 'grok') {
-    attempts.push(() => generateWithGrok(context, platform));
-    if (GEMINI_API_KEY) attempts.push(() => generateWithGemini(context, platform));
-    if (OLLAMA_BASE_URL) attempts.push(() => generateWithOllama(context, platform));
-  } else if (AI_SERVICE === 'ollama') {
-    attempts.push(() => generateWithOllama(context, platform));
-    if (GEMINI_API_KEY) attempts.push(() => generateWithGemini(context, platform));
-  }
-
-  for (const attempt of attempts) {
-    try {
-      const result = await attempt();
-      if (result && result.caption) return result;
-    } catch (err) {
-      console.warn(`[CAPTION-GEN] AI provider failed: ${err}`);
-    }
-  }
-
-  // Deterministic fallback when no AI is reachable
-  return fallbackCaption(platform, mediaType, shortcode);
-}
-
-/**
-* Generate caption using Google Gemini 2.5 Flash API
-*/
-async function generateWithGemini(context: string, platform: string): Promise<CaptionResult> {
-  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not set');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: context }] }],
-      generationConfig: { temperature: 0.8, maxOutputTokens: 600 }
-    })
-  });
-
-  if (!res.ok) throw new Error(`Gemini API error ${res.status}`);
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return parseCaptionResult(text, platform);
-}
-
-/**
-* Generate caption using xAI Grok API
-*/
-async function generateWithGrok(context: string, platform: string): Promise<CaptionResult> {
-  if (!GROK_API_KEY) throw new Error('GROK_API_KEY not set');
-  const res = await fetch('https://api.x.ai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${GROK_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: 'grok-2-1212',
-      messages: [{ role: 'user', content: context }],
-      temperature: 0.8,
-      max_tokens: 600
-    })
-  });
-
-  if (!res.ok) throw new Error(`Grok API error ${res.status}`);
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content || '';
-  return parseCaptionResult(text, platform);
-}
-
-/**
-* Generate caption using local Ollama server (supports open-source models like GPT-OSS 120B)
-*/
-async function generateWithOllama(context: string, platform: string): Promise<CaptionResult> {
-  const res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages: [{ role: 'user', content: context }],
-      stream: false
-    })
-  });
-
-  if (!res.ok) throw new Error(`Ollama API error ${res.status}`);
-  const data = await res.json();
-  const text = data?.message?.content || '';
-  return parseCaptionResult(text, platform);
-}
-
-/**
-* Parse raw AI text into structured caption + hashtags
-*/
-function parseCaptionResult(text: string, platform: string): CaptionResult {
-  if (!text) throw new Error('Empty AI response');
-
-  // Extract hashtags from anywhere in the text
-  const hashtagMatches = text.match(/#([A-Za-z0-9_]+)/g) || [];
-  const hashtags = hashtagMatches.map(h => h.replace(/^#/, ''));
-
-  // Remove hashtag-only lines and hashtag tokens to build clean caption
-  const lines = text
-    .split('\n')
-    .map(l => l.trim())
-    .filter(l => l.length > 0 && !/^[#>*-]|^hashtags?:?$/i.test(l) && !/^#/.test(l));
-
-  let caption = lines.join(' ');
-  // Strip stray #tokens left inside the caption text
-  caption = caption.replace(/#[A-Za-z0-9_]+/g, '').replace(/\s+/g, ' ').trim();
-
-  // Clean hashtags (lowercase except useful ones, dedupe, cap at 12)
-  const cleaned: string[] = [];
-  for (const tag of hashtags) {
-    const t = tag.toLowerCase();
-    if (!cleaned.includes(t) && t.length > 1) cleaned.push(t);
-    if (cleaned.length >= 12) break;
-  }
-
-  if (!caption) caption = platform === 'tiktok' ? 'New TikTok post' : `New ${platform} post`;
-  if (cleaned.length === 0) return fallbackCaption(platform, 'video', '');
-  return { caption, hashtags: cleaned };
-}
-
-/**
-* Deterministic fallback caption when no AI provider is available/reachable
-*/
-function fallbackCaption(platform: string, mediaType: string, shortcode: string): CaptionResult {
-  const presetCaptions: Record<string, string> = {
-    instagram: `✨ New post! Check out this ${mediaType === 'video' ? 'video' : 'photo'}. What do you think? Drop a comment below!`,
-    tiktok: `🎬 POV: this ${mediaType === 'video' ? 'video' : 'content'} hits different. Watch till the end!`,
-    facebook: `📢 Just shared a new ${mediaType}. Let us know your thoughts in the comments!`
-  };
-
-  const presetTags: Record<string, string[]> = {
-    instagram: ['instagood', 'photooftheday', 'reels', 'explore', 'viral', 'trending', 'instagram'],
-    tiktok: ['fyp', 'foryou', 'viral', 'trending', 'tiktok', 'reels'],
-    facebook: ['facebook', 'viral', 'trending', 'justposted']
-  };
-
-  const caption = shortcode
-    ? `${presetCaptions[platform]} #${shortcode}`
-    : presetCaptions[platform];
-
-  return { caption, hashtags: presetTags[platform] || ['post'] };
-}
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
 app.use(express.json());
+
+// Simple in-memory token bucket rate limiter
+class RateLimiter {
+  private buckets: Map<string, { tokens: number; lastRefill: number }> = new Map();
+  
+  constructor(
+    private capacity: number,
+    private refillRate: number // tokens per second
+  ) {}
+  
+  private refill(bucket: { tokens: number; lastRefill: number }): { tokens: number; lastRefill: number } {
+    const now = Date.now();
+    const elapsed = (now - bucket.lastRefill) / 1000;
+    const newTokens = Math.min(this.capacity, bucket.tokens + elapsed * this.refillRate);
+    return { tokens: newTokens, lastRefill: now };
+  }
+  
+  consume(key: string, tokens = 1): boolean {
+    let bucket = this.buckets.get(key);
+    if (!bucket) {
+      bucket = { tokens: this.capacity, lastRefill: Date.now() };
+      this.buckets.set(key, bucket);
+    }
+    bucket = this.refill(bucket);
+    if (bucket.tokens >= tokens) {
+      bucket.tokens -= tokens;
+      this.buckets.set(key, bucket);
+      return true;
+    }
+    return false;
+  }
+  
+  getRemaining(key: string): number {
+    let bucket = this.buckets.get(key);
+    if (!bucket) return this.capacity;
+    bucket = this.refill(bucket);
+    this.buckets.set(key, bucket);
+    return Math.floor(bucket.tokens);
+  }
+  
+  reset(key: string): void {
+    this.buckets.delete(key);
+  }
+}
+
+// Rate limiters for different endpoint groups
+const proxyMediaLimiter = new RateLimiter(30, 0.5);   // 30 req burst, 0.5/sec refill = 30/min
+const fbPagesLimiter = new RateLimiter(10, 0.1);      // 10 req burst, 0.1/sec refill = 6/min
+const authLimiter = new RateLimiter(20, 0.33);        // 20 req burst, 0.33/sec refill = 20/min
+
+function rateLimit(limiter: RateLimiter, keyFn: (req: express.Request) => string = (req) => req.ip || 'unknown') {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const key = keyFn(req);
+    if (!limiter.consume(key)) {
+      const remaining = limiter.getRemaining(key);
+      res.setHeader('X-RateLimit-Remaining', remaining.toString());
+      res.setHeader('Retry-After', Math.ceil(1 / 0.5).toString());
+      return res.status(429).json({ 
+        error: "RATE_LIMITED", 
+        message: "Too many requests. Please slow down.",
+        retryAfter: Math.ceil(1 / 0.5)
+      });
+    }
+    res.setHeader('X-RateLimit-Remaining', limiter.getRemaining(key).toString());
+    next();
+  };
+}
 
 // CORS headers for local app requests
 app.use((req, res, next) => {
@@ -221,1192 +94,308 @@ app.get("/api/health", (req, res) => {
 });
 
 // ==========================================
-// SCHEDULER STATE
+// ANALYTICS (in-memory + .analytics.json persistence)
 // ==========================================
+const ANALYTICS_FILE = path.join(process.cwd(), ".analytics.json");
+interface DayCounters { scraped: number; downloads: number }
+let analyticsDays = new Map<string, DayCounters>();
 
-interface ScheduledItem {
-  id: string;
-  shortcode: string;
-  platform: 'instagram' | 'tiktok' | 'facebook';
-  mediaUrl: string;
-  videoUrl?: string;
-  thumbnailUrl?: string;
-  caption?: string;
-  type?: 'video' | 'image' | 'carousel';
-  scheduledAt: number; // timestamp when next post should happen
-  postedCount: number; // how many times this item has been posted
-  cyclePosition: number; // position in cycle (0, 1, 2 for 3-item cycle)
-  lastPostedAt?: number;
-  gapAfterMs: number; // gap in ms after this post before next
-  randomOffsetMs: number; // random offset for next scheduling
-  // Platform-specific targeting
-  targetPage?: string; // For Facebook: page ID/name; For IG: username
-  platformSelect?: 'all' | 'instagram' | 'tiktok' | 'facebook'; // For half-half posting
-  // Progress tracking (optional - set during posting)
-  progress?: {
-    percentage: number;
-    status: 'pending' | 'processing' | 'completed' | 'failed';
-    error?: string;
-    lastUpdate: number;
-  };
-}
-
-interface SchedulerState {
-  items: Map<string, ScheduledItem>;
-  nextCyclePosition: number; // for cycle detection
-  platformStats: {
-    instagram: { posted: number; failed: number };
-    tiktok: { posted: number; failed: number };
-    facebook: { posted: number; failed: number };
-  };
-  config: {
-    defaultGapMs: number; // default gap between posts
-    maxCycleSize: number; // cycle size (3 means after 3 posts repeat)
-    randomJitterMs: number; // random offset range
-  };
-  connectedPages: {          // Connected page accounts (real credentials)
-    instagram: {
-      username: string;
-      igUserId?: string;
-      accessToken?: string;
-      expiresAt?: number;
-      connected?: boolean;
-    };
-    tiktok: {
-      openId?: string;
-      username?: string;
-      clientKey?: string;
-      clientSecret?: string;
-      accessToken?: string;
-      refreshToken?: string;
-      expiresAt?: number;
-      connected?: boolean;
-    };
-    facebook: {
-      pageId: string;
-      pageName: string;
-      accessToken?: string;
-      expiresAt?: number;
-      connected?: boolean;
-    };
-  };
-}
-
-// In-memory scheduler state (in production, use Redis or database)
-const schedulerState: SchedulerState = {
-  items: new Map(),
-  nextCyclePosition: 0,
-  platformStats: {
-    instagram: { posted: 0, failed: 0 },
-    tiktok: { posted: 0, failed: 0 },
-    facebook: { posted: 0, failed: 0 }
-  },
-  config: {
-    defaultGapMs: 60 * 60 * 1000, // 1 hour default gap
-    maxCycleSize: 3,
-    randomJitterMs: 30 * 60 * 1000 // 30 min jitter
-  },
-  connectedPages: {
-    instagram: { username: '', igUserId: '', accessToken: '', expiresAt: 0 },
-    tiktok: { openId: '', username: '', clientKey: '', clientSecret: '', accessToken: '', refreshToken: '', expiresAt: 0 },
-    facebook: { pageId: '', pageName: '', accessToken: '', expiresAt: 0 }
+function loadAnalytics() {
+  try {
+    if (!fs.existsSync(ANALYTICS_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(ANALYTICS_FILE, "utf8"));
+    if (data && typeof data === "object") {
+      analyticsDays = new Map(Object.entries(data));
+    }
+  } catch (e) {
+    console.warn("[ANALYTICS] Could not load:", e);
   }
-};
+}
+
+function saveAnalytics() {
+  try {
+    fs.writeFileSync(ANALYTICS_FILE, JSON.stringify(Object.fromEntries(analyticsDays), null, 2), "utf8");
+  } catch (e) {
+    console.warn("[ANALYTICS] Could not persist:", e);
+  }
+}
+
+function dayKey(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function trackAnalytics(kind: "scrape" | "download", n = 1) {
+  const key = dayKey();
+  const cur = analyticsDays.get(key) || { scraped: 0, downloads: 0 };
+  if (kind === "scrape") cur.scraped += n;
+  else cur.downloads += n;
+  analyticsDays.set(key, cur);
+  saveAnalytics();
+}
 
 // ==========================================
-// REAL PLATFORM INTEGRATIONS
+// AUTH + CREDITS (Supabase)
 // ==========================================
+import { createClient } from "@supabase/supabase-js";
 
-const GRAPH_API_BASE = "https://graph.facebook.com/v21.0";
-const TIKTOK_API_BASE = "https://open.tiktokapis.com/v2";
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const supabaseConfigured = !!(SUPABASE_URL && SUPABASE_ANON_KEY && SUPABASE_SERVICE_ROLE_KEY);
+
+let _adminClient: ReturnType<typeof createClient> | null = null;
+let _anonClient: ReturnType<typeof createClient> | null = null;
+function adminClient() {
+  if (!_adminClient) _adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+  return _adminClient;
+}
+function anonClient() {
+  if (!_anonClient) _anonClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } });
+  return _anonClient;
+}
+
+interface AuthUser { id: string; email: string }
+
+async function authenticateRequest(req: express.Request): Promise<AuthUser | null> {
+  if (!supabaseConfigured) return null;
+  const authHeader = req.headers.authorization || "";
+  if (authHeader.startsWith("Bearer ")) {
+    const token = authHeader.slice(7).trim();
+    if (!token) return null;
+    try {
+      const { data, error } = await anonClient().auth.getUser(token);
+      if (error || !data.user) return null;
+      return { id: data.user.id, email: data.user.email || "" };
+    } catch {
+      return null;
+    }
+  }
+  const apiToken = (req.headers["x-api-token"] as string) || (req.query.token as string) || "";
+  if (apiToken) {
+    try {
+      const { data } = await adminClient()
+        .from("profiles")
+        .select("id, email")
+        .eq("api_token", apiToken)
+        .maybeSingle<ProfileRow>();
+      if (data) return { id: data.id, email: data.email || "" };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+interface ProfileRow {
+  id: string;
+  email: string;
+  credits: number;
+  api_token?: string | null;
+}
+
+async function getProfile(userId: string): Promise<ProfileRow | null> {
+  // @ts-ignore - Supabase types don't include custom RPC functions
+  const { data, error } = await adminClient().rpc("get_or_create_profile", { uid: userId }) as { data: ProfileRow | null; error: Error | null };
+  if (error) {
+    // @ts-ignore - Supabase types don't include custom table schema
+    const { data: row } = await adminClient().from("profiles").select("*").eq("id", userId).maybeSingle<ProfileRow>();
+    return row;
+  }
+  return data;
+}
+
+async function deductCredits(userId: string, amount: number): Promise<{ ok: boolean; balance: number }> {
+  // @ts-ignore - Supabase types don't include custom RPC functions
+  const { data, error } = await adminClient().rpc("deduct_credits", { uid: userId, amount }) as { data: { ok: boolean; balance: number } | null; error: Error | null };
+  if (error) return { ok: false, balance: -1 };
+  if (data === null || data === undefined) {
+    const profile = await getProfile(userId);
+    return { ok: false, balance: profile?.credits ?? 0 };
+  }
+  return data;
+}
+
+// Disposable / temporary email domains — temp-mail accounts get 0 credits and cannot download.
+const DISPOSABLE_EMAIL_DOMAINS = new Set([
+  "mailinator.com", "guerrillamail.com", "10minutemail.com", "yopmail.com",
+  "temp-mail.org", "tempmail.com", "getnada.com", "maildrop.cc", "throwawaymail.com",
+  "trashmail.com", "mailnesia.com", "spam4.me", "fakemail.net", "emailondeck.com",
+  "disposablemail.com", "tempinbox.com", "33mail.com", "discards.email",
+  "mailnator.com", "tmail.ws", "inboxbear.com", "mintemail.com", "mailcatch.com",
+  "mytemp.email", "tempail.com", "temporary-mail.net", "spamgourmet.com",
+  "jetable.org", "maildax.com", "emailfake.com", "fakeinbox.com", "tempr.email",
+  "inboxes.com", "mailpoof.com", "tempemail.net", "luxusmail.org", "altaddress.com",
+  "hushmail.com", "zoemail.org", "anonaddy.com", "moakt.com", "dispostable.com",
+  "mailsac.com", "burnermail.io", "expirebox.com", "fleapost.com", "grr.la",
+  "ignoremail.com", "mailnull.com", "sogetthis.com", "spamfree24.org",
+  "throwaway.email", "tempmailo.com", "tmpmail.org", "tempmail.dev",
+  "onetimeusemail.com", "one-time.email", "sends.cf", "dropmail.me",
+]);
+
+function isDisposableEmail(email: string): boolean {
+  if (!email) return false;
+  const domain = email.split("@")[1]?.toLowerCase() || "";
+  if (!domain) return false;
+  // Exact match or subdomain of a disposable domain
+  if (DISPOSABLE_EMAIL_DOMAINS.has(domain)) return true;
+  for (const d of DISPOSABLE_EMAIL_DOMAINS) {
+    if (domain === d || domain.endsWith("." + d)) return true;
+  }
+  // IDN / punycode normalization
+  try {
+    const puny = domain.startsWith("xn--") ? domain : new URL(`http://${domain}`).hostname;
+    if (DISPOSABLE_EMAIL_DOMAINS.has(puny)) return true;
+    for (const d of DISPOSABLE_EMAIL_DOMAINS) {
+      if (puny === d || puny.endsWith("." + d)) return true;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+function restrictedEmail(email: string): boolean {
+  return isDisposableEmail(email);
+}
+
+// Current user + credits + api token
+app.get("/api/auth/me", rateLimit(authLimiter), async (req, res) => {
+  if (!supabaseConfigured) {
+    res.status(503).json({ error: "SUPABASE_NOT_CONFIGURED", message: "Supabase keys are not set on the server — add SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY." });
+    return;
+  }
+  const user = await authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "UNAUTHORIZED" });
+    return;
+  }
+  const profile = await getProfile(user.id);
+  const restricted = restrictedEmail(user.email);
+  res.json({
+    user: { id: user.id, email: user.email },
+    credits: restricted ? 0 : profile?.credits ?? 0,
+    apiToken: profile?.api_token || null,
+    restricted,
+  });
+});
+
+// Generate / reveal API token (used by the Chrome extension)
+app.post("/api/auth/apitoken", rateLimit(authLimiter), async (req, res) => {
+  const user = await authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "UNAUTHORIZED" });
+    return;
+  }
+  if (!supabaseConfigured) {
+    res.status(503).json({ error: "SUPABASE_NOT_CONFIGURED" });
+    return;
+  }
+  const { createHash } = await import("node:crypto");
+  const token = createHash("sha256").update(user.id + Date.now().toString() + Math.random().toString()).digest("hex").slice(0, 32);
+  // @ts-ignore - Supabase types don't include custom table schema
+  await adminClient().from("profiles").update({ api_token: token }).eq("id", user.id);
+  res.json({ apiToken: token });
+});
+
+// Credit balance
+app.get("/api/credits", rateLimit(authLimiter), async (req, res) => {
+  const user = await authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "UNAUTHORIZED" });
+    return;
+  }
+  const profile = await getProfile(user.id);
+  res.json({ credits: restrictedEmail(user.email) ? 0 : profile?.credits ?? 0, email: user.email });
+});
+
+// Debit credits (before download)
+app.post("/api/credits/deduct", rateLimit(authLimiter), async (req, res) => {
+  const user = await authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "UNAUTHORIZED" });
+    return;
+  }
+  if (restrictedEmail(user.email)) {
+    res.status(402).json({ error: "INSUFFICIENT_CREDITS", credits: 0, message: "Disposable email accounts are not eligible for downloads. Sign up with a real email." });
+    return;
+  }
+  const count = Math.max(1, Math.min(1000, parseInt(req.body?.count ?? "1", 10) || 1));
+  const { ok, balance } = await deductCredits(user.id, count);
+  if (!ok) {
+    res.status(402).json({ error: "INSUFFICIENT_CREDITS", credits: balance, message: "Insufficient credits. 1 video = 1 credit. Contact the owner to top up." });
+    return;
+  }
+  res.json({ ok: true, credits: balance, deducted: count });
+});
+
+// Extension token validation
+app.get("/api/auth/validate-token", rateLimit(authLimiter), async (req, res) => {
+  if (!supabaseConfigured) {
+    res.json({ valid: false, error: "SUPABASE_NOT_CONFIGURED" });
+    return;
+  }
+  const token = (req.query.token as string) || "";
+  if (!token) {
+    res.json({ valid: false, error: "MISSING_TOKEN" });
+    return;
+  }
+  try {
+    const { data } = await adminClient()
+      .from("profiles")
+      .select("id, email, credits")
+      .eq("api_token", token)
+      .maybeSingle<ProfileRow>();
+    res.json(data
+      ? { valid: true, credits: restrictedEmail(data.email || "") ? 0 : data.credits, email: data.email, restricted: restrictedEmail(data.email || "") }
+      : { valid: false });
+  } catch {
+    res.json({ valid: false });
+  }
+});
+
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-// TikTok OAuth (sandbox) — set in .env
-const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY || "";
-const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "";
-const TIKTOK_REDIRECT_URI =
-  process.env.TIKTOK_CLIENT_REDIRECT_URI || "https://social-scraper-m79h.vercel.app/";
-const TIKTOK_OAUTH_SCOPES = "user.info.basic,video.publish,video.upload";
-
 /**
- * Loose accessor for a platform connection (avoids union-type narrowing pain).
+ * Helper to extract direct MP4 video URL candidates from a TikTok post or video page
+ * Returns multiple candidates for fallback streaming (like Instagram/Facebook)
  */
-function platformConn(platform: string): any {
-  return (schedulerState.connectedPages as any)[platform] || {};
-}
-
-/**
- * Download media bytes from CDN/proxy URL (validates binary payload).
- */
-async function downloadMediaBuffer(targetUrl: string): Promise<{ buffer: Buffer; mime: string }> {
-  const res = await fetch(targetUrl, {
-    headers: {
-      "User-Agent": UA,
-      "Referer": "https://www.instagram.com/",
-      "Accept": "*/*",
-    },
-  });
-  if (!res.ok) throw new Error(`Media fetch failed HTTP ${res.status} for ${targetUrl.substring(0, 80)}`);
-  const mime = res.headers.get("content-type") || "application/octet-stream";
-  const arrayBuffer = await res.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  if (/text\/html|application\/json|text\/plain/i.test(mime)) {
-    throw new Error(`Media endpoint returned non-media payload (${mime})`);
-  }
-  if (buffer.length < 2048) throw new Error(`Media payload too small (${buffer.length} bytes)`);
-  return { buffer, mime };
-}
-
-/**
- * Pick the best direct media URL for an item (video first, then image).
- */
-function pickMediaUrl(item: ScheduledItem): string {
-  const candidates = [item.videoUrl, item.mediaUrl, item.thumbnailUrl].filter(Boolean) as string[];
-  for (const url of candidates) {
-    if (/\.mp4|bytestart|scontent|fbcdn|tiktokcdn|\.jpg|\.jpeg|\.png|candidate/i.test(url)) return url;
-  }
-  return candidates[0] || "";
-}
-
-/**
- * Post to Facebook Page via Graph API (real).
- * Video  -> POST /{page-id}/videos  (multipart upload)
- * Photo  -> POST /{page-id}/photos  (multipart upload)
- */
-async function postToFacebook(item: ScheduledItem): Promise<{ success: boolean; error?: string; postId?: string }> {
-  try {
-    const fb = schedulerState.connectedPages.facebook;
-    if (!fb.pageId || !fb.accessToken) {
-      throw new Error("Facebook page not connected. Add your page access token in Options → Connected Pages.");
-    }
-    const mediaUrl = pickMediaUrl(item);
-    if (!mediaUrl) throw new Error("No media URL available to publish");
-
-    const { buffer, mime } = await downloadMediaBuffer(mediaUrl);
-    const isVideo = item.type === "video" || /video|mp4|quicktime/i.test(mime);
-    const filename = `media_${item.shortcode}.${isVideo ? "mp4" : "jpg"}`;
-    const fieldName = isVideo ? "source" : "source";
-
-    const form = new FormData();
-    form.append(fieldName, new Blob([buffer], { type: isVideo ? "video/mp4" : mime }), filename);
-    form.append("description", item.caption || "");
-    form.append("access_token", fb.accessToken);
-
-    const endpoint = isVideo
-      ? `${GRAPH_API_BASE}/${fb.pageId}/videos`
-      : `${GRAPH_API_BASE}/${fb.pageId}/photos`;
-
-    const res = await fetch(endpoint, { method: "POST", body: form });
-    const data: any = await res.json();
-    if (!res.ok || data.error) {
-      throw new Error(`Facebook Graph API: ${data.error?.message || res.statusText} (${res.status})`);
-    }
-
-    console.log(`[FB-PUBLISH] Post created: id=${data.id}`);
-    return { success: true, postId: data.id };
-  } catch (err) {
-    const message = (err as Error).message;
-    console.error(`[FB-PUBLISH] Failed:`, err);
-    return { success: false, error: message };
-  }
-}
-
-/**
- * Post to Instagram via Instagram Graph API (real, requires IG Business/Professional linked to FB page).
- * Image/Video  -> POST /{ig-user-id}/media  (container) then /media_publish
- */
-async function postToInstagram(item: ScheduledItem): Promise<{ success: boolean; error?: string; postId?: string }> {
-  try {
-    const ig = schedulerState.connectedPages.instagram;
-    if (!ig.igUserId || !ig.accessToken) {
-      throw new Error("Instagram not connected. Connect your Instagram Business account (via Facebook) first.");
-    }
-    const mediaUrl = pickMediaUrl(item);
-    if (!mediaUrl) throw new Error("No media URL available to publish");
-
-    const { buffer, mime } = await downloadMediaBuffer(mediaUrl);
-    const isVideo = item.type === "video" || /video|mp4|quicktime/i.test(mime);
-    const caption = (item.caption || "").slice(0, 2200); // IG caption limit
-
-    // Step 1: Create media container
-    const form = new FormData();
-    form.append("media_type", isVideo ? "REELS" : "IMAGE");
-    form.append(isVideo ? "video_url" : "image_url", mediaUrl);
-    form.append("caption", caption);
-    form.append("access_token", ig.accessToken);
-
-    const containerRes = await fetch(`${GRAPH_API_BASE}/${ig.igUserId}/media`, {
-      method: "POST",
-      body: form,
-    });
-    const containerData: any = await containerRes.json();
-    if (!containerRes.ok || containerData.error) {
-      throw new Error(`Instagram Graph API (container): ${containerData.error?.message || containerRes.statusText} (${containerRes.status})`);
-    }
-    const containerId = containerData.id;
-
-    // Step 2: Poll container status until FINISHED
-    let status = "IN_PROGRESS";
-    for (let i = 0; i < 30 && status !== "FINISHED"; i++) {
-      await new Promise(r => setTimeout(r, 3000));
-      const statusRes = await fetch(
-        `${GRAPH_API_BASE}/${containerId}?fields=status_code&access_token=${encodeURIComponent(ig.accessToken)}`
-      );
-      const statusData: any = await statusRes.json();
-      if (statusData.error) throw new Error(`Instagram Graph API (status): ${statusData.error.message}`);
-      status = statusData.status_code || "IN_PROGRESS";
-      if (status === "ERROR") throw new Error("Instagram rejected media container (status ERROR)");
-    }
-    if (status !== "FINISHED") throw new Error("Instagram container did not reach FINISHED in time");
-
-    // Step 3: Publish container
-    const publishRes = await fetch(`${GRAPH_API_BASE}/${ig.igUserId}/media_publish`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ creation_id: containerId, access_token: ig.accessToken }),
-    });
-    const publishData: any = await publishRes.json();
-    if (!publishRes.ok || publishData.error) {
-      throw new Error(`Instagram Graph API (publish): ${publishData.error?.message || publishRes.statusText} (${publishRes.status})`);
-    }
-
-    console.log(`[IG-PUBLISH] Post published: id=${publishData.id}`);
-    return { success: true, postId: publishData.id };
-  } catch (err) {
-    const message = (err as Error).message;
-    console.error(`[IG-PUBLISH] Failed:`, err);
-    return { success: false, error: message };
-  }
-}
-
-/**
- * Post to TikTok via TikTok Content Posting API (real, requires TikTok developer app).
- * Flow: POST /v2/post/publish/video/init/ (JSON, source=FILE_UPLOAD) → PUT video to upload_url → poll status
- */
-let tiktokPendingPublishes: Map<string, { publishId: string; pollCount: number }> = new Map();
-
-async function postToTikTok(item: ScheduledItem): Promise<{ success: boolean; error?: string; publishId?: string }> {
-  try {
-    const tk = schedulerState.connectedPages.tiktok;
-    if (!tk.accessToken) {
-      throw new Error("TikTok not connected. Add your TikTok access token (developer app required) in Options → Connected Pages.");
-    }
-    const mediaUrl = pickMediaUrl(item);
-    if (!mediaUrl) throw new Error("No media URL available to publish");
-
-    const { buffer, mime } = await downloadMediaBuffer(mediaUrl);
-    const isVideo = item.type === "video" || /video|mp4|quicktime/i.test(mime);
-    if (!isVideo) {
-      throw new Error("TikTok only supports video publishing via the Content Posting API");
-    }
-    const videoSize = buffer.length;
-
-    // Step 1: Initialize publish (JSON — FILE_UPLOAD source). Sandbox/unaudited apps must use SELF_ONLY.
-    const initRes = await fetch(`${TIKTOK_API_BASE}/post/publish/video/init/`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${tk.accessToken}`,
-        "Content-Type": "application/json; charset=UTF-8",
-      },
-      body: JSON.stringify({
-        post_info: {
-          title: (item.caption || "Check this out!").slice(0, 2200),
-          privacy_level: "SELF_ONLY",
-          disable_duet: false,
-          disable_comment: false,
-          disable_stitch: false,
-        },
-        source_info: {
-          source: "FILE_UPLOAD",
-          video_size: videoSize,
-          chunk_size: videoSize,
-          total_chunk_count: 1,
-        },
-      }),
-    });
-    const initData: any = await initRes.json();
-    const initErrCode = initData?.error?.code;
-    if (!initRes.ok || (initErrCode && initErrCode !== "ok")) {
-      const code = initData.error?.code || "";
-      const msg = initData.error?.message || initRes.statusText;
-      if (code === "unaudited_client_can_only_post_to_private_accounts") {
-        throw new Error("TikTok sandbox restriction: set the target account to PRIVATE in the TikTok app (unaudited clients can only post to private accounts), then retry.");
-      }
-      throw new Error(`TikTok API (init): ${msg} (${initRes.status})`);
-    }
-    const publishId = initData.data?.publish_id;
-    const uploadUrl = initData.data?.upload_url;
-    if (!publishId) throw new Error("TikTok init did not return publish_id");
-    if (!uploadUrl) throw new Error("TikTok init did not return upload_url");
-
-    // Step 2: Upload video bytes to TikTok upload_url (single chunk)
-    const uploadRes = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "video/mp4",
-        "Content-Length": String(videoSize),
-        "Content-Range": `bytes 0-${videoSize - 1}/${videoSize}`,
-      },
-      body: new Uint8Array(buffer),
-    });
-    if (!uploadRes.ok) {
-      const upText = await uploadRes.text();
-      throw new Error(`TikTok upload failed HTTP ${uploadRes.status}: ${upText.substring(0, 200)}`);
-    }
-
-    // Step 3: Poll publish status (up to 3 min)
-    let pollCount = 0;
-    let finalStatus = "";
-    while (pollCount < 20) {
-      await new Promise(r => setTimeout(r, 10000));
-      pollCount++;
-      const statusRes = await fetch(`${TIKTOK_API_BASE}/post/publish/status/fetch/`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${tk.accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ publish_id: publishId }),
-      });
-      const statusData: any = await statusRes.json();
-      if (!statusRes.ok) {
-        throw new Error(`TikTok API (status): HTTP ${statusRes.status}`);
-      }
-      finalStatus = statusData?.data?.status || "PROCESSING_UPLOAD";
-      if (finalStatus === "PUBLISH_COMPLETE") break;
-      if (finalStatus === "FAILED" || finalStatus === "PUBLISH_FAILED") {
-        throw new Error(`TikTok publish failed: ${finalStatus} — ${JSON.stringify(statusData.data?.fail_reason || "")}`);
-      }
-    }
-    if (finalStatus !== "PUBLISH_COMPLETE") {
-      throw new Error("TikTok publish did not complete in time");
-    }
-
-    console.log(`[TT-PUBLISH] Publish complete: publishId=${publishId}`);
-    return { success: true, publishId };
-  } catch (err) {
-    const message = (err as Error).message;
-    console.error(`[TT-PUBLISH] Failed:`, err);
-    return { success: false, error: message };
-  }
-}
-
-/**
- * Get the appropriate poster function for a platform
- */
-function getPoster(platform: 'instagram' | 'tiktok' | 'facebook') {
-  switch (platform) {
-    case 'instagram': return postToInstagram;
-    case 'tiktok': return postToTikTok;
-    case 'facebook': return postToFacebook;
-  }
-}
-
-/**
- * Calculate next scheduled time with gap and random jitter
- */
-function calculateNextScheduledTime(
-  currentTime: number,
-  gapAfterMs: number,
-  randomJitterMs: number,
-  cyclePosition: number,
-  maxCycleSize: number
-): number {
-  // Base gap after post
-  const baseDelay = gapAfterMs;
-  
-  // Random offset to avoid pattern detection
-  const randomOffset = Math.floor(Math.random() * randomJitterMs);
-  
-  // Cycle-based adjustment (simple example: space out cycle positions)
-  const cycleAdjustment = (cyclePosition * 15 * 60 * 1000); // 15min per cycle position
-  
-  return currentTime + baseDelay + randomOffset + cycleAdjustment;
-}
-
-// ==========================================
-// API ENDPOINTS
-// ==========================================
-
-/**
- * POST /api/schedule/add - Add media to publish queue
- */
-app.post("/api/schedule/add", (req, res) => {
-  try {
-    const {
-      id,
-      shortcode,
-      platform,
-      mediaUrl,
-      thumbnailUrl,
-      caption,
-      type,
-      gapAfterMs = schedulerState.config.defaultGapMs,
-      randomOffsetMs = schedulerState.config.randomJitterMs
-    } = req.body;
-
-    if (!id || !shortcode || !platform || !mediaUrl) {
-      return res.status(400).json({ error: "Missing required fields: id, shortcode, platform, mediaUrl" });
-    }
-
-    if (!['instagram', 'tiktok', 'facebook'].includes(platform)) {
-      return res.status(400).json({ error: "Invalid platform. Must be: instagram, tiktok, or facebook" });
-    }
-
-    const newItem: ScheduledItem = {
-      id,
-      shortcode,
-      platform,
-      mediaUrl,
-      thumbnailUrl,
-      caption,
-      type,
-      scheduledAt: Date.now() + gapAfterMs, // schedule first post after gap
-      postedCount: 0,
-      cyclePosition: schedulerState.nextCyclePosition,
-      gapAfterMs,
-      randomOffsetMs
-    };
-
-    schedulerState.items.set(id, newItem);
-    
-    // Advance cycle position for next item
-    schedulerState.nextCyclePosition = (schedulerState.nextCyclePosition + 1) % schedulerState.config.maxCycleSize;
-
-    console.log(`[SCHEDULER] Added item to queue: ${shortcode} on ${platform}`);
-    
-    res.json({ 
-      success: true, 
-      itemId: id,
-      message: "Item added to publishing queue",
-      scheduledAt: newItem.scheduledAt
-    });
-  } catch (err) {
-    console.error("[SCHEDULER] Error adding item:", err);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * POST /api/caption/generate - Generate AI caption + hashtags for a post
- */
-app.post("/api/caption/generate", async (req, res) => {
-  try {
-    const { platform, mediaType, shortcode, existingCaption } = req.body;
-
-    if (!['instagram', 'tiktok', 'facebook'].includes(platform)) {
-      return res.status(400).json({ error: "Invalid platform. Must be: instagram, tiktok, facebook" });
-    }
-    if (!shortcode) {
-      return res.status(400).json({ error: "shortcode is required" });
-    }
-
-    const result = await generateCaption({
-      platform,
-      mediaType: mediaType || 'video',
-      shortcode,
-      existingCaption
-    });
-
-    res.json({
-      success: true,
-      caption: result.caption,
-      hashtags: result.hashtags,
-      hashtagString: result.hashtags.map(h => `#${h}`).join(' ')
-    });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * POST /api/schedule/add-with-caption - Add media to queue, auto-generating caption+hashtags
- */
-app.post("/api/schedule/add-with-caption", async (req, res) => {
-  try {
-    const {
-      id,
-      shortcode,
-      platform,
-      mediaUrl,
-      thumbnailUrl,
-      type,
-      gapAfterMs = schedulerState.config.defaultGapMs,
-      randomOffsetMs = schedulerState.config.randomJitterMs,
-      targetPage,
-      platformSelect,
-      existingCaption,
-      generateCaptionAI = true
-    } = req.body;
-
-    if (!id || !shortcode || !platform || !mediaUrl) {
-      return res.status(400).json({ error: "Missing required fields: id, shortcode, platform, mediaUrl" });
-    }
-    if (!['instagram', 'tiktok', 'facebook'].includes(platform)) {
-      return res.status(400).json({ error: "Invalid platform. Must be: instagram, tiktok, facebook" });
-    }
-
-    let caption = existingCaption;
-    let hashtags: string[] = [];
-    let captionSource = 'provided';
-
-    if (generateCaptionAI && !caption) {
-      try {
-        const result = await generateCaption({ platform, mediaType: type || 'video', shortcode, existingCaption });
-        caption = result.caption;
-        hashtags = result.hashtags;
-        captionSource = 'ai';
-      } catch (e) {
-        console.warn(`[SCHEDULER] AI caption generation failed for ${shortcode}, using fallback:`, e);
-        const fb = fallbackCaption(platform, type || 'video', shortcode);
-        caption = fb.caption;
-        hashtags = fb.hashtags;
-        captionSource = 'fallback';
-      }
-    }
-
-    // Append hashtags to caption if generated
-    const fullCaption = captionSource !== 'provided' && hashtags.length > 0
-      ? `${caption}\n\n${hashtags.map(h => `#${h}`).join(' ')}`
-      : caption;
-
-    const newItem: ScheduledItem = {
-      id,
-      shortcode,
-      platform,
-      mediaUrl,
-      thumbnailUrl,
-      caption: fullCaption,
-      type,
-      scheduledAt: Date.now() + gapAfterMs,
-      postedCount: 0,
-      cyclePosition: schedulerState.nextCyclePosition,
-      gapAfterMs,
-      randomOffsetMs,
-      targetPage,
-      platformSelect,
-      progress: {
-        percentage: 0,
-        status: 'pending',
-        lastUpdate: Date.now()
-      }
-    };
-
-    schedulerState.items.set(id, newItem);
-    schedulerState.nextCyclePosition = (schedulerState.nextCyclePosition + 1) % schedulerState.config.maxCycleSize;
-
-    console.log(`[SCHEDULER] Added item with ${captionSource} caption: ${shortcode} on ${platform}`);
-
-    res.json({
-      success: true,
-      itemId: id,
-      caption: fullCaption,
-      hashtags,
-      captionSource,
-      message: "Item added with AI-generated caption",
-      scheduledAt: newItem.scheduledAt
-    });
-  } catch (err) {
-    console.error("[SCHEDULER] Error adding item with caption:", err);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * GET /api/schedule/status - Get scheduler status
- */
-app.get("/api/schedule/status", (req, res) => {
-  res.json({
-    success: true,
-    queueSize: schedulerState.items.size,
-    config: schedulerState.config,
-    platformStats: schedulerState.platformStats,
-    activeItems: Array.from(schedulerState.items.values()).map(item => ({
-      id: item.id,
-      shortcode: item.shortcode,
-      platform: item.platform,
-      scheduledAt: item.scheduledAt,
-      postedCount: item.postedCount,
-      cyclePosition: item.cyclePosition,
-      lastPostedAt: item.lastPostedAt
-    }))
-  });
-});
-
-/**
- * POST /api/schedule/remove - Remove item from queue
- */
-app.post("/api/schedule/remove", (req, res) => {
-  try {
-    const { itemId } = req.body;
-    const removed = schedulerState.items.delete(itemId);
-    
-    res.json({ 
-      success: removed, 
-      message: removed ? "Item removed from queue" : "Item not found in queue"
-    });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * POST /api/schedule/clear - Clear all scheduled items
- */
-app.post("/api/schedule/clear", (req, res) => {
-  schedulerState.items.clear();
-  schedulerState.nextCyclePosition = 0;
-  res.json({ success: true, message: "Scheduler queue cleared" });
-});
-
-/**
- * POST /api/schedule/trigger-now - Manually trigger next post
- */
-app.post("/api/schedule/trigger-now", async (req, res) => {
-  try {
-    const { platform } = req.body || {};
-    
-    // Find the next eligible item for this platform ('all' matches any)
-    let nextItem: ScheduledItem | null = null;
-    let nextEarliestTime = Infinity;
-    
-    for (const item of schedulerState.items.values()) {
-      if (platform && platform !== 'all' && item.platform !== platform) continue;
-      if (item.scheduledAt < nextEarliestTime) {
-        nextEarliestTime = item.scheduledAt;
-        nextItem = item;
-      }
-    }
-    
-    if (!nextItem) {
-      return res.json({ success: false, message: "No scheduled items in queue" });
-    }
-    
-    // Check platform connectivity before posting
-    const targetPlatform = nextItem.platform;
-    const conn = platformConn(targetPlatform);
-    const connected = !!conn?.connected || !!(conn?.accessToken || conn?.pageId || conn?.igUserId);
-
-    if (!connected) {
-      return res.json({
-        success: false,
-        message: `${targetPlatform} not connected. Add credentials in Options → Connected Pages first.`,
-        needsConnection: true
-      });
-    }
-    
-    // Execute posting now
-    const poster = getPoster(nextItem.platform);
-    const result = await poster(nextItem);
-    
-    if (result.success) {
-      nextItem.postedCount++;
-      nextItem.cyclePosition = (nextItem.cyclePosition + 1) % schedulerState.config.maxCycleSize;
-      nextItem.lastPostedAt = Date.now();
-      nextItem.scheduledAt = Date.now() + nextItem.gapAfterMs + nextItem.randomOffsetMs;
-      nextItem.progress = { percentage: 100, status: 'completed', lastUpdate: Date.now() };
-      schedulerState.platformStats[targetPlatform].posted++;
-    } else {
-      nextItem.progress = { percentage: 0, status: 'failed', error: result.error, lastUpdate: Date.now() };
-      nextItem.scheduledAt = Date.now() + 10 * 60 * 1000;
-      schedulerState.platformStats[targetPlatform].failed++;
-    }
-    
-    return res.json({
-      success: result.success,
-      itemId: nextItem.id,
-      shortcode: nextItem.shortcode,
-      platform: targetPlatform,
-      postId: (result as any).postId || (result as any).publishId,
-      message: result.success ? "Posting completed" : `Posting failed: ${result.error}`
-    });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * POST /api/schedule/connect-page - Connect a page account for a platform (real credentials)
- */
-app.post("/api/schedule/connect-page", (req, res) => {
-  try {
-    const {
-      platform,
-      pageId, pageName, accessToken, expiresAt,
-      igUserId, username,
-      openId, clientKey, clientSecret, refreshToken, tiktokUsername
-    } = req.body;
-
-    if (!['instagram', 'tiktok', 'facebook'].includes(platform)) {
-      return res.status(400).json({ error: "Invalid platform" });
-    }
-
-    if (!accessToken && platform === 'facebook') {
-      return res.status(400).json({ error: "Facebook requires an accessToken (Page access token)" });
-    }
-
-    if (platform === 'instagram') {
-      if (!igUserId || !accessToken) {
-        return res.status(400).json({ error: "Instagram requires igUserId and accessToken (IG Business via Facebook Graph)" });
-      }
-      schedulerState.connectedPages.instagram = {
-        username: username || pageId || '',
-        igUserId,
-        accessToken,
-        expiresAt: expiresAt ? Date.now() + expiresAt * 1000 : 0,
-        connected: true
-      };
-    } else if (platform === 'tiktok') {
-      if (!accessToken) {
-        return res.status(400).json({ error: "TikTok requires accessToken (Content Posting API)" });
-      }
-      schedulerState.connectedPages.tiktok = {
-        openId: openId || '',
-        username: tiktokUsername || '',
-        clientKey: clientKey || '',
-        clientSecret: clientSecret || '',
-        accessToken,
-        refreshToken: refreshToken || '',
-        expiresAt: expiresAt ? Date.now() + expiresAt * 1000 : 0,
-        connected: true
-      };
-      saveTikTokCredentials();
-    } else if (platform === 'facebook') {
-      if (!pageId) {
-        return res.status(400).json({ error: "Facebook requires pageId" });
-      }
-      schedulerState.connectedPages.facebook = {
-        pageId,
-        pageName: pageName || pageId,
-        accessToken,
-        expiresAt: expiresAt ? Date.now() + expiresAt * 1000 : 0,
-        connected: true
-      };
-    }
-
-    console.log(`[SCHEDULER] Connected ${platform} page: ${pageId || username || igUserId || openId || ''}`);
-    
-    res.json({ success: true, message: "Page connected successfully" });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * POST /api/schedule/disconnect-page - Remove a platform connection
- */
-app.post("/api/schedule/disconnect-page", (req, res) => {
-  try {
-    const { platform } = req.body;
-    if (!['instagram', 'tiktok', 'facebook'].includes(platform)) {
-      return res.status(400).json({ error: "Invalid platform" });
-    }
-    schedulerState.connectedPages[platform] = {
-      instagram: { username: '' },
-      tiktok: { openId: '' },
-      facebook: { pageId: '', pageName: '' },
-    }[platform] as any;
-    res.json({ success: true, message: `Disconnected ${platform}` });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * GET /api/schedule/disconnected-pages - Get connected page accounts
- */
-app.get("/api/schedule/disconnected-pages", (req, res) => {
-  res.json({
-    success: true,
-    connectedPages: schedulerState.connectedPages
-  });
-});
-
-/**
- * GET /api/schedule/connection-status - Which platforms are ready to publish
- */
-app.get("/api/schedule/connection-status", (req, res) => {
-  const status: Record<string, { connected: boolean; needs: string[] }> = {};
-  for (const platform of ['instagram', 'tiktok', 'facebook'] as const) {
-    const c = platformConn(platform);
-    const connected = !!(c?.connected && (c.accessToken || c.pageId || c.igUserId));
-    status[platform] = {
-      connected,
-      needs: connected
-        ? []
-        : platform === 'facebook'
-          ? ['Page access token', 'Page ID']
-          : platform === 'instagram'
-            ? ['IG user ID', 'FB access token with instagram_basic']
-            : ['TikTok access token', 'Client Key/Secret']
-    };
-  }
-  res.json({ success: true, status });
-});
-
-/**
- * POST /api/schedule/test-connection - Verify a platform connection with a lightweight API call
- */
-app.post("/api/schedule/test-connection", async (req, res) => {
-  try {
-    const { platform } = req.body;
-    if (!['instagram', 'tiktok', 'facebook'].includes(platform)) {
-      return res.status(400).json({ error: "Invalid platform" });
-    }
-
-    if (platform === 'facebook') {
-      const fb = schedulerState.connectedPages.facebook;
-      if (!fb.accessToken || !fb.pageId) throw new Error("Not connected");
-      const r = await fetch(`${GRAPH_API_BASE}/${fb.pageId}?fields=name,id&access_token=${encodeURIComponent(fb.accessToken)}`);
-      const d: any = await r.json();
-      if (d.error) throw new Error(`Facebook: ${d.error.message}`);
-      return res.json({ success: true, message: `Facebook OK — page: ${d.name || fb.pageName}` });
-    }
-
-    if (platform === 'instagram') {
-      const ig = schedulerState.connectedPages.instagram;
-      if (!ig.accessToken || !ig.igUserId) throw new Error("Not connected");
-      const r = await fetch(`${GRAPH_API_BASE}/${ig.igUserId}?fields=username&access_token=${encodeURIComponent(ig.accessToken)}`);
-      const d: any = await r.json();
-      if (d.error) throw new Error(`Instagram: ${d.error.message}`);
-      return res.json({ success: true, message: `Instagram OK — @${d.username || ig.username}` });
-    }
-
-    if (platform === 'tiktok') {
-      const tk = schedulerState.connectedPages.tiktok;
-      if (!tk.accessToken) throw new Error("Not connected");
-      const r = await fetch(`${TIKTOK_API_BASE}/user/info/?fields=open_id,union_id,avatar_url,display_name`, {
-        headers: { "Authorization": `Bearer ${tk.accessToken}` }
-      });
-      const d: any = await r.json();
-      if (d.error) throw new Error(`TikTok: ${d.error.message || d.error.code}`);
-      const info = d.data?.user;
-      return res.json({ success: true, message: `TikTok OK — @${info?.display_name || tk.username || 'user'}` });
-    }
-  } catch (err) {
-    return res.status(400).json({ success: false, error: (err as Error).message });
-  }
-});
-
-/**
- * POST /api/schedule/update-progress - Update progress on a scheduled item
- */
-app.post("/api/schedule/update-progress", (req, res) => {
-  try {
-    const { itemId, percentage, status, error } = req.body;
-    
-    const item = schedulerState.items.get(itemId);
-    if (!item) {
-      return res.status(404).json({ error: "Item not found" });
-    }
-    
-    item.progress = {
-      percentage,
-      status: status || 'pending',
-      error: error,
-      lastUpdate: Date.now()
-    };
-    
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * GET /api/schedule/dashboard - Get full dashboard status
- */
-app.get("/api/schedule/dashboard", (req, res) => {
-  const activeItems = Array.from(schedulerState.items.values()).map(item => ({
-    id: item.id,
-    shortcode: item.shortcode,
-    platform: item.platform,
-    targetPage: item.targetPage,
-    platformSelect: item.platformSelect,
-    scheduledAt: item.scheduledAt,
-    postedCount: item.postedCount,
-    cyclePosition: item.cyclePosition,
-    progress: item.progress,
-    gapAfterMs: item.gapAfterMs,
-    randomOffsetMs: item.randomOffsetMs
-  }));
-  
-  res.json({
-    success: true,
-    queueSize: schedulerState.items.size,
-    config: schedulerState.config,
-    platformStats: schedulerState.platformStats,
-    connectedPages: schedulerState.connectedPages,
-    activeItems: activeItems
-  });
-});
-
-/**
- * POST /api/schedule/config - Update scheduler config (gap, cycle size, jitter)
- */
-app.post("/api/schedule/config", (req, res) => {
-  try {
-    const { defaultGapMs, maxCycleSize, randomJitterMs } = req.body || {};
-    if (typeof defaultGapMs === "number" && defaultGapMs >= 0) {
-      schedulerState.config.defaultGapMs = defaultGapMs;
-    }
-    if (typeof maxCycleSize === "number" && maxCycleSize >= 1 && maxCycleSize <= 100) {
-      schedulerState.config.maxCycleSize = maxCycleSize;
-      schedulerState.nextCyclePosition = schedulerState.nextCyclePosition % maxCycleSize;
-    }
-    if (typeof randomJitterMs === "number" && randomJitterMs >= 0) {
-      schedulerState.config.randomJitterMs = randomJitterMs;
-    }
-    console.log("[SCHEDULER] Config updated:", schedulerState.config);
-    res.json({ success: true, config: schedulerState.config });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// ==========================================
-// TIKTOK OAUTH (Login Kit + Content Posting API)
-// ==========================================
-
-// Persist TikTok credentials across restarts (local file, gitignored)
-const TIKTOK_CRED_FILE = path.join(process.cwd(), ".tiktok-credentials.json");
-
-function saveTikTokCredentials() {
-  try {
-    const tk = schedulerState.connectedPages.tiktok;
-    if (!tk.accessToken) return;
-    fs.writeFileSync(TIKTOK_CRED_FILE, JSON.stringify(tk, null, 2), "utf8");
-  } catch (e) {
-    console.warn("[TT-OAUTH] Could not persist credentials:", e);
-  }
-}
-
-function loadTikTokCredentials() {
-  try {
-    if (!fs.existsSync(TIKTOK_CRED_FILE)) return;
-    const data = JSON.parse(fs.readFileSync(TIKTOK_CRED_FILE, "utf8"));
-    if (data && data.accessToken) {
-      schedulerState.connectedPages.tiktok = { ...data, connected: true };
-      console.log(`[TT-OAUTH] Loaded saved TikTok credentials for: ${data.username || data.openId || "user"}`);
-    }
-  } catch (e) {
-    console.warn("[TT-OAUTH] Could not load saved credentials:", e);
-  }
-}
-
-// PKCE: code verifiers keyed by state (required by TikTok since 2025)
-const tiktokPkceStore = new Map<string, { verifier: string; createdAt: number }>();
-
-function base64UrlEncode(buf: Buffer): string {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-/**
- * GET /api/tiktok/oauth-url - Build the TikTok authorize URL for the sandbox app (PKCE flow)
- */
-app.get("/api/tiktok/oauth-url", (req, res) => {
-  try {
-    if (!TIKTOK_CLIENT_KEY) {
-      return res.status(400).json({ error: "TIKTOK_CLIENT_KEY not set — add it to .env" });
-    }
-    const state = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-    const verifier = base64UrlEncode(randomBytes(64));
-    tiktokPkceStore.set(state, { verifier, createdAt: Date.now() });
-    const codeChallenge = base64UrlEncode(createHash("sha256").update(verifier).digest());
-    const url =
-      "https://www.tiktok.com/v2/auth/authorize/?" +
-      `client_key=${encodeURIComponent(TIKTOK_CLIENT_KEY)}` +
-      `&scope=${encodeURIComponent(TIKTOK_OAUTH_SCOPES)}` +
-      `&response_type=code` +
-      `&redirect_uri=${encodeURIComponent(TIKTOK_REDIRECT_URI)}` +
-      `&state=${state}` +
-      `&code_challenge=${codeChallenge}` +
-      `&code_challenge_method=S256`;
-    res.json({ success: true, url, state, redirectUri: TIKTOK_REDIRECT_URI });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-/**
- * POST /api/tiktok/exchange - Exchange authorization code for access token, store connection
- */
-app.post("/api/tiktok/exchange", async (req, res) => {
-  try {
-    const { code, state } = req.body || {};
-    if (!code) return res.status(400).json({ error: "code is required" });
-    if (!TIKTOK_CLIENT_KEY || !TIKTOK_CLIENT_SECRET) {
-      throw new Error("TikTok client credentials not configured — add TIKTOK_CLIENT_KEY/SECRET to .env");
-    }
-    const pkce = state ? tiktokPkceStore.get(state) : undefined;
-    if (!pkce) throw new Error("Missing PKCE verifier — start the flow from the app (Connect with TikTok)");
-    tiktokPkceStore.delete(state);
-
-    const params = new URLSearchParams();
-    params.set("client_key", TIKTOK_CLIENT_KEY);
-    params.set("client_secret", TIKTOK_CLIENT_SECRET);
-    params.set("code", code);
-    params.set("grant_type", "authorization_code");
-    params.set("redirect_uri", TIKTOK_REDIRECT_URI);
-    params.set("code_verifier", pkce.verifier);
-
-    const tokenRes = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: params.toString(),
-    });
-    const tokenData: any = await tokenRes.json();
-    if (!tokenRes.ok || tokenData.error) {
-      throw new Error(`TikTok token exchange failed: ${tokenData.error?.message || tokenData.error || JSON.stringify(tokenData)}`);
-    }
-    const accessToken = tokenData.access_token;
-    const openId = tokenData.open_id;
-    if (!accessToken) throw new Error("No access_token in TikTok response");
-
-    let username = "";
-    try {
-      const infoRes = await fetch(`${TIKTOK_API_BASE}/user/info/?fields=open_id,union_id,avatar_url,display_name`, {
-        headers: { "Authorization": `Bearer ${accessToken}` },
-      });
-      const infoData: any = await infoRes.json();
-      username = infoData?.data?.user?.display_name || openId || "";
-    } catch (e) {
-      console.warn("[TT-OAUTH] Could not fetch user info:", e);
-    }
-
-    schedulerState.connectedPages.tiktok = {
-      openId,
-      username,
-      clientKey: TIKTOK_CLIENT_KEY,
-      clientSecret: TIKTOK_CLIENT_SECRET,
-      accessToken,
-      refreshToken: tokenData.refresh_token || "",
-      expiresAt: Date.now() + (Number(tokenData.expires_in) || 24 * 3600) * 1000,
-      connected: true,
-    };
-    saveTikTokCredentials();
-
-    console.log(`[TT-OAUTH] Connected TikTok account: ${username || openId}`);
-    res.json({ success: true, openId, username, scope: tokenData.scope || "" });
-  } catch (err) {
-    console.error("[TT-OAUTH] Exchange error:", err);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// ==========================================
-// CRON SCHEDULER JOB
-// ==========================================
-
-/**
- * Run scheduled posts - this would be called by a cron job
- * In production, this would be set up via system cron or a cron library
- */
-function runScheduledPosts() {
-  const now = Date.now();
-  const posted: string[] = [];
-  
-  for (const item of schedulerState.items.values()) {
-    if (!item) continue;
-    
-    const platform = item.platform;
-    const connected = platformConn(platform)?.connected ||
-      !!(platformConn(platform)?.accessToken ||
-         platformConn(platform)?.pageId ||
-         platformConn(platform)?.igUserId);
-
-    // If platform not connected, reschedule the item instead of erroring
-    if (!connected) {
-      const retryMs = 5 * 60 * 1000; // retry in 5 minutes
-      item.scheduledAt = now + retryMs;
-      item.progress = {
-        percentage: 0,
-        status: 'pending',
-        error: `${platform} not connected — waiting for credentials`,
-        lastUpdate: now
-      };
-      console.warn(`[CRON] ${item.shortcode} skipped: ${platform} not connected. Retry in 5min.`);
-      continue;
-    }
-    
-    // Check if it's time to post this item
-    if (item.scheduledAt <= now) {
-      const poster = getPoster(item.platform);
-      poster(item).then(result => {
-        if (result.success) {
-          item.postedCount++;
-          item.cyclePosition = (item.cyclePosition + 1) % schedulerState.config.maxCycleSize;
-          item.lastPostedAt = Date.now();
-          item.scheduledAt = Date.now() + item.gapAfterMs + item.randomOffsetMs;
-          item.progress = {
-            percentage: 100,
-            status: 'completed',
-            lastUpdate: Date.now()
-          };
-          schedulerState.platformStats[platform].posted++;
-          posted.push(item.id);
-          console.log(`[CRON] Successfully posted: ${item.shortcode} (${platform})`);
-        } else {
-          item.progress = {
-            percentage: 0,
-            status: 'failed',
-            error: result.error || 'Unknown error',
-            lastUpdate: Date.now()
-          };
-          // Reschedule retry in 10 minutes (avoid tight error loops)
-          item.scheduledAt = Date.now() + 10 * 60 * 1000;
-          schedulerState.platformStats[platform].failed++;
-          console.warn(`[CRON] Failed to post: ${item.shortcode} (${platform}) - ${result.error}`);
-        }
-      });
-    }
-  }
-  
-  console.log(`[CRON] Scheduler check: ${posted.length} items posted, ${schedulerState.items.size} total in queue`);
-  
-  return posted;
-}
-
-// Initialize cron-like scheduling
-// In production, use: setInterval(runScheduledPosts, 30 * 1000) or a cron library
-// For now, we'll set a 30-second interval for demonstration
-setInterval(runScheduledPosts, 30 * 1000);
-
-console.log("[SCHEDULER] Scheduler initialized with 30-second check interval");
-
-/**
- * Helper to extract direct MP4 video URL from a TikTok post or video page
- */
-async function resolveTikTokVideoUrl(shortcode: string, providedUrl?: string): Promise<string | null> {
+async function resolveTikTokVideoCandidates(shortcode: string, providedUrl?: string): Promise<string[]> {
   const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  const candidates: string[] = [];
 
   // 1. If providedUrl is already a direct video file URL on tiktokcdn or tikwm
   if (providedUrl && (providedUrl.includes('tiktokcdn.com') || providedUrl.includes('tikwm.com') || providedUrl.includes('.mp4') || providedUrl.includes('bytestart='))) {
-    return providedUrl;
+    candidates.push(providedUrl);
   }
 
   const cleanUrl = providedUrl && providedUrl.includes('tiktok.com') 
     ? providedUrl 
     : (shortcode ? `https://www.tiktok.com/@user/video/${shortcode}` : null);
 
-  if (!cleanUrl) return providedUrl || null;
+  if (!cleanUrl) return candidates;
 
-  console.log(`[PROXY-SERVER] Resolving TikTok video URL for: ${cleanUrl}`);
+  console.log(`[PROXY-SERVER] Resolving TikTok video candidates for: ${cleanUrl}`);
 
   // Attempt 1: Fetch via TikWM API (Fast, no watermark, direct MP4)
   try {
     const tikwmApiUrl = `https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}`;
-    const tikwmRes = await fetch(tikwmApiUrl, {
-      headers: { "User-Agent": userAgent }
-    });
+    const tikwmRes = await fetch(tikwmApiUrl, { headers: { "User-Agent": userAgent } });
     if (tikwmRes.ok) {
       const tikwmJson = await tikwmRes.json();
       if (tikwmJson && tikwmJson.data && tikwmJson.data.play) {
         let directMp4 = tikwmJson.data.play;
         if (directMp4.startsWith("//")) directMp4 = "https:" + directMp4;
         else if (directMp4.startsWith("/")) directMp4 = "https://www.tikwm.com" + directMp4;
-        console.log(`[PROXY-SERVER] Successfully resolved TikTok video via TikWM API: ${directMp4.substring(0, 80)}...`);
-        return directMp4;
+        if (!candidates.includes(directMp4)) {
+          candidates.push(directMp4);
+          console.log(`[PROXY-SERVER] TikTok candidate 1 (TikWM): ${directMp4.substring(0, 80)}...`);
+        }
+      }
+      // Also check for HD/watermark variants
+      if (tikwmJson.data?.hdplay && !candidates.includes(tikwmJson.data.hdplay)) {
+        let hdUrl = tikwmJson.data.hdplay;
+        if (hdUrl.startsWith("//")) hdUrl = "https:" + hdUrl;
+        else if (hdUrl.startsWith("/")) hdUrl = "https://www.tikwm.com" + hdUrl;
+        candidates.push(hdUrl);
+        console.log(`[PROXY-SERVER] TikTok candidate 2 (HD): ${hdUrl.substring(0, 80)}...`);
       }
     }
   } catch (err) {
@@ -1416,9 +405,7 @@ async function resolveTikTokVideoUrl(shortcode: string, providedUrl?: string): P
   // Attempt 2: Fetch TikTok oEmbed endpoint
   try {
     const oembedUrl = `https://www.tiktok.com/oembed?url=${encodeURIComponent(cleanUrl)}`;
-    const oembedRes = await fetch(oembedUrl, {
-      headers: { "User-Agent": userAgent }
-    });
+    const oembedRes = await fetch(oembedUrl, { headers: { "User-Agent": userAgent } });
     if (oembedRes.ok) {
       const oembedJson = await oembedRes.json();
       if (oembedJson.html) {
@@ -1427,8 +414,10 @@ async function resolveTikTokVideoUrl(shortcode: string, providedUrl?: string): P
         if (mp4Match && mp4Match[1]) {
           let directUrl = mp4Match[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
           if (directUrl.startsWith("//")) directUrl = "https:" + directUrl;
-          console.log(`[PROXY-SERVER] Resolved TikTok video via oEmbed: ${directUrl.substring(0, 80)}...`);
-          return directUrl;
+          if (!candidates.includes(directUrl)) {
+            candidates.push(directUrl);
+            console.log(`[PROXY-SERVER] TikTok candidate 3 (oEmbed): ${directUrl.substring(0, 80)}...`);
+          }
         }
       }
     }
@@ -1459,15 +448,41 @@ async function resolveTikTokVideoUrl(shortcode: string, providedUrl?: string): P
       if (videoMatch && videoMatch[1]) {
         let directUrl = videoMatch[1].replace(/\\u0026/g, "&").replace(/\\/g, "");
         if (directUrl.startsWith("//")) directUrl = "https:" + directUrl;
-        console.log(`[PROXY-SERVER] Resolved TikTok video via page HTML: ${directUrl.substring(0, 80)}...`);
-        return directUrl;
+        if (!candidates.includes(directUrl)) {
+          candidates.push(directUrl);
+          console.log(`[PROXY-SERVER] TikTok candidate 4 (HTML): ${directUrl.substring(0, 80)}...`);
+        }
+      }
+      // Also extract all play_addr url_list entries
+      const urlListMatches = html.matchAll(/"play_addr"\s*:\s*\{\s*"url_list"\s*:\s*\[([^\]]+)\]/gi);
+      for (const match of urlListMatches) {
+        const urls = match[1].match(/"([^"]+)"/g) || [];
+        for (const u of urls) {
+          let url = u.replace(/"/g, '').replace(/\\u0026/g, "&").replace(/\\/g, "");
+          if (url.startsWith("//")) url = "https:" + url;
+          if (url.includes('tiktokcdn') && !candidates.includes(url)) {
+            candidates.push(url);
+            console.log(`[PROXY-SERVER] TikTok candidate 5 (url_list): ${url.substring(0, 80)}...`);
+          }
+        }
       }
     }
   } catch (err) {
     console.warn(`[PROXY-SERVER] Error resolving TikTok video page for ${cleanUrl}:`, err);
   }
 
-  return providedUrl || null;
+  // Prefer tiktokcdn.com URLs first (direct CDN streams)
+  return candidates.sort((a, b) => {
+    const aScore = a.includes('tiktokcdn.com') ? 2 : (a.includes('tikwm.com') ? 1 : 0);
+    const bScore = b.includes('tiktokcdn.com') ? 2 : (b.includes('tikwm.com') ? 1 : 0);
+    return bScore - aScore;
+  });
+}
+
+// Backward compatibility - returns first candidate only
+async function resolveTikTokVideoUrl(shortcode: string, providedUrl?: string): Promise<string | null> {
+  const candidates = await resolveTikTokVideoCandidates(shortcode, providedUrl);
+  return candidates[0] || providedUrl || null;
 }
 
 /**
@@ -1660,7 +675,7 @@ function extractFacebookVideoCandidates(html: string): string[] {
     }
   }
 
-  // HD streams first, then SD — deduped overall
+  // HD streams first, then SD â€” deduped overall
   [...hd, ...sd].forEach(u => {
     if (!out.includes(u)) out.push(u);
   });
@@ -1731,9 +746,158 @@ async function resolveFacebookVideoCandidates(shortcode: string, providedUrl?: s
 }
 
 /**
- * Proxy media endpoint: Fetches full-quality MP4/JPG directly from CDN, bypassing browser CORS restrictions.
+ * Shared media resolution: returns ordered candidate URLs for a target media item.
  */
-app.get("/api/proxy-media", async (req, res) => {
+async function resolveMediaCandidates(targetUrl: string, shortcode: string, mediaType: string, platform: string) {
+  if (!targetUrl && !shortcode) {
+    throw new Error("MISSING_PARAMS");
+  }
+  let resolvedUrl = targetUrl;
+  let urlCandidates: string[] = [];
+
+  if (mediaType === "video" || (targetUrl && (targetUrl.includes("/reel/") || targetUrl.includes("/p/") || targetUrl.includes("/video/") || targetUrl.includes("/watch/")))) {
+    if (platform === "tiktok" || (targetUrl && targetUrl.includes("tiktok.com"))) {
+      urlCandidates = await resolveTikTokVideoCandidates(shortcode, targetUrl);
+      if (urlCandidates.length > 0) resolvedUrl = urlCandidates[0];
+    } else if (platform === "facebook" || (targetUrl && targetUrl.includes("facebook.com"))) {
+      urlCandidates = await resolveFacebookVideoCandidates(shortcode, targetUrl);
+      urlCandidates = urlCandidates.sort((a, b) => {
+        const hdScore = (u: string) => (/(hd|quality_hd|native_hd)/i.test(u) || u.includes('_hd')) ? 2 : (u.includes('.mp4') ? 1 : 0);
+        return hdScore(b) - hdScore(a);
+      });
+      if (urlCandidates.length > 0) resolvedUrl = urlCandidates[0];
+    } else {
+      urlCandidates = await resolveInstagramVideoCandidates(shortcode, targetUrl);
+      urlCandidates = urlCandidates.sort((a, b) => {
+        const score = (u: string) => {
+          if (u.includes('.mp4') && (u.includes('scontent') || u.includes('cdninstagram'))) return 3;
+          if (u.includes('.mp4')) return 2;
+          if (u.includes('bytestart')) return 1;
+          return 0;
+        };
+        return score(b) - score(a);
+      });
+      if (urlCandidates.length > 0) resolvedUrl = urlCandidates[0];
+    }
+  } else if (resolvedUrl) {
+    urlCandidates = [resolvedUrl];
+  }
+
+  if (!resolvedUrl || urlCandidates.length === 0) {
+    throw new Error("NO_MEDIA_RESOLVED");
+  }
+  return { resolvedUrl, urlCandidates };
+}
+
+/**
+ * Shared media streaming: tries every candidate until a valid binary is found.
+ */
+async function streamMediaCandidates(res: express.Response, opts: { resolvedUrl: string; urlCandidates: string[]; platform: string; mediaType: string; attachment: boolean }) {
+  const { resolvedUrl, urlCandidates, platform, mediaType, attachment } = opts;
+
+  const baseHeaders: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Encoding": "identity"
+  };
+
+  console.log(`[PROXY-SERVER] Proxying media request for [${mediaType}] -> ${resolvedUrl.substring(0, 90)}... (${urlCandidates.length} candidate(s))`);
+
+  for (const candidate of urlCandidates) {
+    const headers = { ...baseHeaders };
+    if (platform === "tiktok" || (candidate || '').includes("tiktokcdn")) {
+      headers["Referer"] = "https://www.tiktok.com/";
+    } else {
+      headers["Referer"] = "https://www.instagram.com/";
+    }
+
+    try {
+      console.log(`[PROXY-SERVER] Trying candidate: ${candidate.substring(0, 90)}...`);
+      const cdnResponse = await fetch(candidate, { headers });
+
+      if (!cdnResponse.ok) {
+        console.warn(`[PROXY-SERVER] Candidate returned HTTP ${cdnResponse.status}`);
+        continue;
+      }
+
+      const contentType = cdnResponse.headers.get("content-type") || "";
+      const arrayBuffer = await cdnResponse.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      if (/text\/html|application\/json|text\/plain/i.test(contentType) || buffer.length < 2048) {
+        console.warn(`[PROXY-SERVER] Candidate yielded invalid payload (${contentType}) — skipping`);
+        continue;
+      }
+
+      if (mediaType === "video" && !isMp4Buffer(buffer)) {
+        console.warn(`[PROXY-SERVER] Candidate payload is not a real MP4 (${buffer.length} bytes) — skipping`);
+        continue;
+      }
+
+      const isImage = /image/i.test(contentType);
+      const finalType = isImage && !/mp4|quicktime|video/i.test(contentType) ? (contentType || "image/jpeg") : contentType;
+
+      console.log(`[PROXY-SERVER] Media successfully fetched. Binary size: ${(buffer.length / 1024 / 1024).toFixed(2)} MB (${buffer.length} bytes), Type: ${finalType}, URL: ${candidate.substring(0, 60)}`);
+
+      res.setHeader("Content-Type", finalType);
+      res.setHeader("Content-Length", buffer.length);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      if (attachment) {
+        const ext = isImage ? "jpg" : "mp4";
+        const filename = `socialscraper_${Date.now()}.${ext}`;
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      }
+      res.send(buffer);
+      return true;
+    } catch (err) {
+      console.warn(`[PROXY-SERVER] Candidate fetch failed: ${err}`);
+      continue;
+    }
+  }
+
+  res.status(404).json({ error: "All media candidates failed to produce a valid binary" });
+  return false;
+}
+
+/**
+ * Proxy media endpoint: Fetches full-quality MP4/JPG directly from CDN, bypassing browser CORS restrictions.
+ * Free preview path (images + video preview).
+ */
+app.get("/api/proxy-media", rateLimit(proxyMediaLimiter), async (req, res) => {
+  const targetUrl = req.query.url as string;
+  const shortcode = req.query.shortcode as string;
+  const mediaType = (req.query.type as string) || "video";
+  const platform = (req.query.platform as string) || "instagram";
+
+  try {
+    const { resolvedUrl, urlCandidates } = await resolveMediaCandidates(targetUrl, shortcode, mediaType, platform);
+    await streamMediaCandidates(res, { resolvedUrl, urlCandidates, platform, mediaType, attachment: false });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === "MISSING_PARAMS") {
+      res.status(400).json({ error: "Missing url or shortcode query parameter" });
+      return;
+    }
+    if (msg === "NO_MEDIA_RESOLVED") {
+      res.status(404).json({ error: "Could not resolve direct media URL" });
+      return;
+    }
+    console.error("[PROXY-SERVER] Proxy media error:", err);
+    res.status(500).json({ error: "Failed to proxy media", message: msg });
+  }
+});
+
+/**
+ * Download endpoint: authenticated (JWT or API token), deducts 1 credit per video download.
+ */
+app.get("/api/media/download", async (req, res) => {
+  const user = await authenticateRequest(req);
+  if (!user) {
+    res.status(401).json({ error: "UNAUTHORIZED", message: "Sign in or use your API token (x-api-token header)." });
+    return;
+  }
+
   const targetUrl = req.query.url as string;
   const shortcode = req.query.shortcode as string;
   const mediaType = (req.query.type as string) || "video";
@@ -1744,119 +908,1288 @@ app.get("/api/proxy-media", async (req, res) => {
     return;
   }
 
-  try {
-    let resolvedUrl = targetUrl;
-    let urlCandidates: string[] = [];
+  const isVideo = mediaType === "video" || (targetUrl && (targetUrl.includes("/reel/") || targetUrl.includes("/p/") || targetUrl.includes("/video/") || targetUrl.includes("/watch/")));
 
-    // For video / reel items, resolve direct MP4 URL based on platform
-    if (mediaType === "video" || (targetUrl && (targetUrl.includes("/reel/") || targetUrl.includes("/p/") || targetUrl.includes("/video/") || targetUrl.includes("/watch/")))) {
-      if (platform === "tiktok" || (targetUrl && targetUrl.includes("tiktok.com"))) {
-        const resolved = await resolveTikTokVideoUrl(shortcode, targetUrl);
-        if (resolved) {
-          resolvedUrl = resolved;
-          urlCandidates = [resolved];
-        }
-      } else if (platform === "facebook" || (targetUrl && targetUrl.includes("facebook.com"))) {
-        urlCandidates = await resolveFacebookVideoCandidates(shortcode, targetUrl);
-        // HD-tier streams first
-        urlCandidates = urlCandidates.sort((a, b) => {
-          const hdScore = (u: string) => (/(hd|quality_hd|native_hd)/i.test(u) || u.includes('_hd')) ? 2 : (u.includes('.mp4') ? 1 : 0);
-          return hdScore(b) - hdScore(a);
-        });
-        if (urlCandidates.length > 0) resolvedUrl = urlCandidates[0];
-      } else {
-        urlCandidates = await resolveInstagramVideoCandidates(shortcode, targetUrl);
-        // Prefer the highest-resolution scontent direct stream first
-        urlCandidates = urlCandidates.sort((a, b) => {
-          const score = (u: string) => {
-            if (u.includes('.mp4') && (u.includes('scontent') || u.includes('cdninstagram'))) return 3;
-            if (u.includes('.mp4')) return 2;
-            if (u.includes('bytestart')) return 1;
-            return 0;
-          };
-          return score(b) - score(a);
-        });
-        if (urlCandidates.length > 0) resolvedUrl = urlCandidates[0];
+  try {
+    // Resolve the media first — never charge a credit for a download that fails to resolve.
+    const { resolvedUrl, urlCandidates } = await resolveMediaCandidates(targetUrl, shortcode, mediaType, platform);
+
+    if (isVideo && supabaseConfigured) {
+      if (restrictedEmail(user.email)) {
+        res.status(402).json({ error: "INSUFFICIENT_CREDITS", credits: 0, message: "Disposable email accounts are not eligible for downloads. Sign up with a real email." });
+        return;
       }
-    } else if (resolvedUrl) {
-      urlCandidates = [resolvedUrl];
+      const { ok, balance } = await deductCredits(user.id, 1);
+      if (!ok) {
+        res.status(402).json({ error: "INSUFFICIENT_CREDITS", credits: balance, message: "Insufficient credits. 1 video = 1 credit." });
+        return;
+      }
+      console.log(`[CREDITS] User ${user.id} downloaded 1 video. Balance: ${balance}`);
     }
 
-    if (!resolvedUrl || urlCandidates.length === 0) {
+    await streamMediaCandidates(res, { resolvedUrl, urlCandidates, platform, mediaType, attachment: true });
+    trackAnalytics("download");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === "NO_MEDIA_RESOLVED") {
       res.status(404).json({ error: "Could not resolve direct media URL" });
       return;
     }
-
-    // Set up request headers to bypass CDN blocking
-    const baseHeaders: Record<string, string> = {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      "Accept": "*/*",
-      "Accept-Encoding": "identity" // Prevent chunk encoding issues for binary streaming
-    };
-
-    console.log(`[PROXY-SERVER] Proxying media request for [${mediaType}] -> ${resolvedUrl.substring(0, 90)}... (${urlCandidates.length} candidate(s))`);
-
-    // Try every candidate until we get a genuine video/image binary
-    for (const candidate of urlCandidates) {
-      const headers = { ...baseHeaders };
-      if (platform === "tiktok" || (candidate || '').includes("tiktokcdn")) {
-        headers["Referer"] = "https://www.tiktok.com/";
-      } else {
-        headers["Referer"] = "https://www.instagram.com/";
-      }
-
-      try {
-        console.log(`[PROXY-SERVER] Trying candidate: ${candidate.substring(0, 90)}...`);
-        const cdnResponse = await fetch(candidate, { headers });
-
-        if (!cdnResponse.ok) {
-          console.warn(`[PROXY-SERVER] Candidate returned HTTP ${cdnResponse.status}`);
-          continue;
-        }
-
-        const contentType = cdnResponse.headers.get("content-type") || "";
-        const arrayBuffer = await cdnResponse.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-
-        // Reject HTML/JSON login-page shams before streaming them to the client
-        if (/text\/html|application\/json|text\/plain/i.test(contentType) || buffer.length < 2048) {
-          console.warn(`[PROXY-SERVER] Candidate yielded invalid payload (${contentType}) — skipping`);
-          continue;
-        }
-
-        // For videos, verify the actual MP4 container header (prevents tiny/renamed images)
-        if (mediaType === "video" && !isMp4Buffer(buffer)) {
-          console.warn(`[PROXY-SERVER] Candidate payload is not a real MP4 (${buffer.length} bytes) — skipping`);
-          continue;
-        }
-
-        const isImage = /image/i.test(contentType);
-        const finalType = isImage && !/mp4|quicktime|video/i.test(contentType) ? (contentType || "image/jpeg") : contentType;
-
-        console.log(`[PROXY-SERVER] Media successfully fetched. Binary size: ${(buffer.length / 1024 / 1024).toFixed(2)} MB (${buffer.length} bytes), Type: ${finalType}, URL: ${candidate.substring(0, 60)}`);
-
-        res.setHeader("Content-Type", finalType);
-        res.setHeader("Content-Length", buffer.length);
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Cache-Control", "public, max-age=86400");
-        res.send(buffer);
-        return;
-      } catch (err) {
-        console.warn(`[PROXY-SERVER] Candidate fetch failed: ${err}`);
-        continue;
-      }
-    }
-
-    res.status(404).json({ error: "All media candidates failed to produce a valid binary" });
-  } catch (err: any) {
-    console.error("[PROXY-SERVER] Proxy media error:", err);
-    res.status(500).json({ error: "Failed to proxy media", message: err.message });
+    console.error("[MEDIA-DOWNLOAD] Download error:", err);
+    res.status(500).json({ error: "Failed to download media", message: msg });
   }
 });
 
-async function startServer() {
-  loadTikTokCredentials();
+// INSTAGRAM AUTO-POST (session-based â€” no Meta app / no review)
+// ==========================================
 
+const PYTHON_BIN = process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3");
+const DATA_DIR = process.env.DATA_DIR || process.cwd();
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignore */ }
+const IG_POSTER_SCRIPT = path.join(process.cwd(), "instagram_poster.py");
+const IG_SESSION_CRED_FILE = path.join(DATA_DIR, ".ig-poster-session.json");
+const PUBLISH_QUEUE_FILE = path.join(DATA_DIR, ".publish-queue.json");
+
+interface PublishItem {
+  id: string;
+  shortcode: string;
+  mediaUrl: string;
+  caption?: string;
+  type: 'video' | 'image';
+  reel: boolean;
+  platform: 'instagram' | 'facebook';
+  scheduledAt: number;
+  status: 'queued' | 'downloading' | 'publishing' | 'posted' | 'failed';
+  attempts: number;
+  postedAt?: number;
+  postUrl?: string;
+  error?: string;
+  idempotencyKey?: string;
+}
+
+let publishQueue: Map<string, PublishItem> = new Map();
+
+function generateIdempotencyKey(shortcode: string, mediaUrl: string, platform: string): string {
+  const { createHash } = require("node:crypto");
+  return createHash("sha256").update(`${shortcode}|${mediaUrl}|${platform}`).digest("hex").slice(0, 32);
+}
+
+function findByIdempotencyKey(key: string): PublishItem | undefined {
+  for (const item of publishQueue.values()) {
+    if (item.idempotencyKey === key) return item;
+  }
+  return undefined;
+}
+
+// ==========================================
+// FACEBOOK PAGE CONNECTION (Page Access Token — no app review needed for your own pages)
+// ==========================================
+const FB_GRAPH = "https://graph.facebook.com/v21.0";
+const FB_SESSION_CRED_FILE = path.join(DATA_DIR, ".fb-poster-session.json");
+
+interface FacebookPageSession {
+  pageId: string;
+  pageName: string;
+  accessToken: string;
+  connected: boolean;
+  igUserId?: string;
+  igUsername?: string;
+  igGraphApi?: boolean;
+  userToken?: string;
+  allPages?: Array<{ id: string; name: string; category?: string }>;
+}
+
+function saveFacebookPosterSession(session: FacebookPageSession) {
+  try {
+    fs.writeFileSync(FB_SESSION_CRED_FILE, JSON.stringify(session, null, 2), "utf8");
+  } catch (e) {
+    console.warn("[FB-POSTER] Could not persist session:", e);
+  }
+}
+
+function loadFacebookPosterSession(): FacebookPageSession | null {
+  try {
+    if (!fs.existsSync(FB_SESSION_CRED_FILE)) return null;
+    const data = JSON.parse(fs.readFileSync(FB_SESSION_CRED_FILE, "utf8"));
+    if (data && data.pageId && data.accessToken) {
+      console.log(`[FB-POSTER] Loaded saved Facebook session for page: ${data.pageName || data.pageId}`);
+      return data as FacebookPageSession;
+    }
+  } catch (e) {
+    console.warn("[FB-POSTER] Could not load session:", e);
+  }
+  return null;
+}
+
+let fbTokenValidity: { checkedAt: number; valid: boolean; pageName?: string } | null = null;
+const FB_TOKEN_CHECK_TTL = 10 * 60 * 1000;
+
+async function checkFacebookToken(): Promise<{ valid: boolean; pageName?: string }> {
+  const fb = loadFacebookPosterSession();
+  if (!fb) return { valid: false };
+  if (fbTokenValidity && Date.now() - fbTokenValidity.checkedAt < FB_TOKEN_CHECK_TTL) {
+    return { valid: fbTokenValidity.valid, pageName: fbTokenValidity.pageName };
+  }
+  const result = await fbGraphGet<{ id: string; name: string }>(`/${fb.pageId}?fields=id,name`, fb.accessToken);
+  fbTokenValidity = { checkedAt: Date.now(), valid: result.ok, pageName: result.data?.name };
+  if (!result.ok) console.warn(`[FB-POSTER] Stored token is invalid or expired: ${result.error}`);
+  return { valid: result.ok, pageName: result.data?.name };
+}
+
+async function fbGraphGet<T>(path: string, accessToken: string): Promise<{ ok: boolean; data?: T; error?: string }> {
+  try {
+    const res = await fetch(`${FB_GRAPH}${path}${path.includes("?") ? "&" : "?"}access_token=${encodeURIComponent(accessToken)}`);
+    const json = await res.json();
+    if (json.error) return { ok: false, error: `${json.error.message} (code ${json.error.code})` };
+    return { ok: true, data: json as T };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+async function fbGraphPost<T>(path: string, accessToken: string, body: Record<string, string | number | boolean>): Promise<{ ok: boolean; data?: T; error?: string }> {
+  try {
+    const form = new URLSearchParams();
+    for (const [k, v] of Object.entries(body)) form.append(k, String(v));
+    form.append("access_token", accessToken);
+    const res = await fetch(`${FB_GRAPH}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    });
+    const json = await res.json();
+    if (json.error) return { ok: false, error: `${json.error.message} (code ${json.error.code})` };
+    return { ok: true, data: json as T };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+interface SidecarResult {
+  ok: boolean;
+  message: string;
+  username?: string;
+  url?: string;
+  code?: string;
+  [key: string]: unknown;
+}
+
+function runPythonSidecar(args: string[]): Promise<SidecarResult> {
+  return new Promise(resolve => {
+    const child = spawn(PYTHON_BIN, [IG_POSTER_SCRIPT, ...args], { windowsHide: true, cwd: DATA_DIR });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", d => (stdout += d));
+    child.stderr.on("data", d => (stderr += d));
+    child.on("error", err => {
+      resolve({ ok: false, message: `Python sidecar failed to start: ${err.message}. Install Python 3.8+ and run: pip install instagrapi` });
+    });
+child.on("close", code => {
+      const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
+      // JSON is emitted as the last stdout line (earlier lines are library progress logs)
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line.startsWith("{")) continue;
+        try {
+          resolve(JSON.parse(line));
+          return;
+        } catch {
+          continue;
+        }
+      }
+      resolve({ ok: false, message: stderr.trim() || stdout.trim() || `sidecar exited with code ${code}` });
+    });
+  });
+}
+
+function saveInstagramPosterSession() {
+  try {
+    const username = process.env.IG_POSTER_USERNAME || "";
+    if (!username) return;
+    fs.writeFileSync(IG_SESSION_CRED_FILE, JSON.stringify({ username, connected: true }, null, 2), "utf8");
+  } catch (e) {
+    console.warn("[IG-POSTER] Could not persist session:", e);
+  }
+}
+
+function loadInstagramPosterSession(): string {
+  try {
+    if (!fs.existsSync(IG_SESSION_CRED_FILE)) return "";
+    const data = JSON.parse(fs.readFileSync(IG_SESSION_CRED_FILE, "utf8"));
+    if (data && data.username) {
+      console.log(`[IG-POSTER] Loaded saved Instagram session for: @${data.username}`);
+      return data.username;
+    }
+  } catch (e) {
+    console.warn("[IG-POSTER] Could not load session:", e);
+  }
+  return "";
+}
+
+function savePublishQueue() {
+  try {
+    fs.writeFileSync(PUBLISH_QUEUE_FILE, JSON.stringify(Array.from(publishQueue.values()), null, 2), "utf8");
+  } catch (e) {
+    console.warn("[IG-POSTER] Could not persist queue:", e);
+  }
+}
+
+function loadPublishQueue() {
+  try {
+    if (!fs.existsSync(PUBLISH_QUEUE_FILE)) return;
+    const items: PublishItem[] = JSON.parse(fs.readFileSync(PUBLISH_QUEUE_FILE, "utf8"));
+    if (Array.isArray(items)) {
+      publishQueue = new Map(items.map(i => [i.id, i]));
+      // Recover stale in-flight items after a restart (upload died with the old process)
+      for (const item of publishQueue.values()) {
+        if (item.status === 'publishing' || item.status === 'downloading') {
+          item.status = 'queued';
+        }
+      }
+      savePublishQueue();
+      console.log(`[IG-POSTER] Loaded ${items.length} queued posts from disk`);
+    }
+  } catch (e) {
+    console.warn("[IG-POSTER] Could not load queue:", e);
+  }
+}
+
+async function downloadPublishMedia(item: PublishItem): Promise<Buffer> {
+  // Direct CDN media URL first
+  try {
+    const res = await fetch(item.mediaUrl, {
+      headers: { "User-Agent": UA, "Referer": "https://www.instagram.com/", "Accept": "*/*" }
+    });
+    if (res.ok) {
+      const mime = res.headers.get("content-type") || "";
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (!/text\/html|application\/json|text\/plain/i.test(mime) && buf.length > 2048) return buf;
+    }
+  } catch (e) { /* fall through to resolution */ }
+
+  // 'VIDEO:shortcode' style or reel page URL â€” resolve direct streams first
+  const cleanCode = item.shortcode || (item.mediaUrl.match(/\/(?:p|reel|reels)\/([A-Za-z0-9_-]+)/) || [])[1] || "";
+  const candidates = await resolveInstagramVideoCandidates(cleanCode, item.mediaUrl.startsWith("http") ? item.mediaUrl : undefined);
+  for (const url of candidates) {
+    const res = await fetch(url, { headers: { "User-Agent": UA, "Referer": "https://www.instagram.com/", "Accept": "*/*" } });
+    if (!res.ok) continue;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 2048) return buf;
+  }
+  throw new Error(`Could not download media for ${item.shortcode || item.id}`);
+}
+
+async function publishToFacebook(item: PublishItem, mediaBuffer: Buffer): Promise<{ ok: boolean; url?: string; message?: string }> {
+  const fb = loadFacebookPosterSession();
+  if (!fb) return { ok: false, message: "No Facebook page connected — connect in the Auto-Post panel first." };
+
+  // Direct video URL for Graph API upload (avoids temp file for Facebook)
+  let mediaFileBuffer: Buffer | null = null;
+  let uploadPath: string;
+
+  if (item.type === 'video') {
+    if (item.reel) {
+      uploadPath = `/${fb.pageId}/reels`;
+    } else {
+      uploadPath = `/${fb.pageId}/videos`;
+    }
+  } else {
+    uploadPath = `/${fb.pageId}/photos`;
+  }
+
+  if (item.type === 'video') {
+    // Prefer video_url (Graph accepts direct MP4 links); fall back to binary upload
+    try {
+      const body: Record<string, string | number | boolean> = {
+        caption: (item.caption || "").slice(0, 1500) || "Shared via SocialScraper",
+        description: (item.caption || "").slice(0, 1500) || "Shared via SocialScraper",
+        published: true,
+      };
+      if (!/^https?:\/\//i.test(item.mediaUrl)) {
+        mediaFileBuffer = mediaBuffer;
+      } else {
+        body.video_url = item.mediaUrl;
+      }
+      const result = item.reel
+        ? await fbGraphPost<{ id: string }>(uploadPath, fb.accessToken, body)
+        : await fbGraphPost<{ id: string }>(uploadPath, fb.accessToken, body);
+      if (result.ok) {
+        return { ok: true, url: `https://www.facebook.com/${fb.pageId}/posts/${result.data?.id || ''}`, message: "Posted to Facebook" };
+      }
+      if (result.error?.toLowerCase().includes("video_url") || result.error?.toLowerCase().includes("invalid parameter")) {
+        // Some pages require binary upload — fall through to binary
+      } else {
+        return { ok: false, message: result.error };
+      }
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+  }
+
+  // Binary upload via multipart for photos or video_url fallback
+  if (item.type === 'image' || mediaFileBuffer) {
+    try {
+      const form = new FormData();
+      const mime = item.type === 'image' ? 'image/jpeg' : 'video/mp4';
+      const ext = item.type === 'image' ? 'jpg' : 'mp4';
+      form.append('file', new Blob([mediaFileBuffer || mediaBuffer], { type: mime }), `media_${item.id}.${ext}`);
+      form.append('caption', (item.caption || '').slice(0, 1500) || 'Shared via SocialScraper');
+      form.append('access_token', fb.accessToken);
+      const res = await fetch(`${FB_GRAPH}${uploadPath}`, { method: 'POST', body: form });
+      const json = await res.json();
+      if (json.error) return { ok: false, message: `${json.error.message} (code ${json.error.code})` };
+      return { ok: true, url: `https://www.facebook.com/${fb.pageId}/posts/${json.id || ''}`, message: 'Posted to Facebook' };
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+  }
+
+  return { ok: false, message: 'Could not upload to Facebook' };
+}
+
+async function publishToInstagramGraphApi(item: PublishItem, fb: FacebookPageSession): Promise<{ ok: boolean; url?: string; message?: string }> {
+  if (!fb.igUserId) return { ok: false, message: "No Instagram business account linked to the connected page" };
+  const mediaUrl = item.mediaUrl;
+  if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
+    return { ok: false, message: "IG Graph API needs a public media URL — scraped mediaUrl is missing" };
+  }
+
+  // Step 1: create the container
+  const isVideo = item.type === 'video';
+  const params: Record<string, string> = {
+    access_token: fb.accessToken,
+    caption: (item.caption || "").slice(0, 2200),
+  };
+  if (isVideo) {
+    params.media_type = item.reel ? 'REELS' : 'VIDEO';
+    params.video_url = mediaUrl;
+    if (item.reel) params.share_to_feed = 'true';
+  } else {
+    params.image_url = mediaUrl;
+  }
+
+  const container = await fbGraphPost<{ id: string }>(`/${fb.igUserId}/media`, fb.accessToken, params);
+  if (!container.ok || !container.data?.id) {
+    return { ok: false, message: container.error || "Could not create IG media container" };
+  }
+  const containerId = container.data.id;
+
+  // Videos need processing before publish — poll container status (max ~90s)
+  if (isVideo) {
+    const deadline = Date.now() + 90 * 1000;
+    while (Date.now() < deadline) {
+      const status = await fbGraphGet<{ status_code?: string; status?: string }>(`/${containerId}?fields=status_code`, fb.accessToken);
+      const code = status.data?.status_code || "";
+      if (code === 'FINISHED') break;
+      if (code === 'ERROR' || (status.data?.status && /error/i.test(status.data.status))) {
+        return { ok: false, message: `IG video processing error: ${status.data?.status || code}` };
+      }
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  }
+
+  // Step 2: publish
+  const publish = await fbGraphPost<{ id: string }>(`/${fb.igUserId}/media_publish`, fb.accessToken, { creation_id: containerId });
+  if (!publish.ok || !publish.data?.id) {
+    return { ok: false, message: publish.error || "IG media_publish failed" };
+  }
+  const shortcode = await fbGraphGet<{ shortcode?: string }>(`/${publish.data.id}?fields=shortcode`, fb.accessToken);
+  return {
+    ok: true,
+    url: shortcode.data?.shortcode ? `https://www.instagram.com/p/${shortcode.data.shortcode}/` : `https://www.instagram.com/p/${publish.data.id}/`,
+    message: 'Posted to Instagram via Graph API',
+  };
+}
+
+async function publishItemNow(item: PublishItem): Promise<boolean> {
+  if (item.status === 'posted') return true;
+  if (item.platform === 'facebook') {
+    const fb = loadFacebookPosterSession();
+    if (!fb) {
+      item.status = 'failed';
+      item.error = 'No Facebook page connected — connect in the Auto-Post panel first.';
+      savePublishQueue();
+      return false;
+    }
+  } else {
+    const fb = loadFacebookPosterSession();
+    const username = loadInstagramPosterSession();
+    if (!fb?.igUserId && !username) {
+      item.status = 'failed';
+      item.error = 'No Instagram available — link an Instagram business account to the connected page (Graph API) or connect an IG session.';
+      savePublishQueue();
+      return false;
+    }
+  }
+
+  item.status = 'downloading';
+  savePublishQueue();
+  let tmpFile = "";
+  try {
+    const caption = (item.caption || "").slice(0, 2200);
+    let success = false;
+    let postUrl = "";
+    let failMessage = "";
+
+    if (item.platform === 'facebook') {
+      const buf = await downloadPublishMedia(item);
+      const fb = loadFacebookPosterSession()!;
+      // Facebook: try video_url first (no temp upload), binary as fallback
+      const res = await publishToFacebook(item, buf);
+      if (res.ok) {
+        success = true;
+        postUrl = res.url || '';
+      } else {
+        failMessage = res.message || 'Facebook publish failed';
+      }
+    } else {
+      // Instagram: prefer Graph API (no download, uses public media URL) — fall back to instagrapi sidecar
+      const fb = loadFacebookPosterSession();
+      if (fb?.igUserId) {
+        const res = await publishToInstagramGraphApi(item, fb);
+        if (res.ok) {
+          success = true;
+          postUrl = res.url || '';
+        } else {
+          failMessage = res.message || 'IG Graph API publish failed';
+        }
+      } else {
+        failMessage = 'No Instagram business account linked to the connected page';
+      }
+
+      if (!success) {
+        const username = loadInstagramPosterSession();
+        if (username) {
+          const buf = await downloadPublishMedia(item);
+          const tmpDir = path.join(DATA_DIR, ".tmp");
+          fs.mkdirSync(tmpDir, { recursive: true });
+          tmpFile = path.join(tmpDir, `post_${item.id}_${Date.now()}.${item.type === 'video' ? 'mp4' : 'jpg'}`);
+          fs.writeFileSync(tmpFile, buf);
+          const side = await runPythonSidecar([
+            "publish",
+            "--username", username,
+            "--media", tmpFile,
+            "--caption", caption,
+            "--type", item.type,
+            "--reel", item.reel ? "true" : "false"
+          ]);
+          if (side.ok) {
+            success = true;
+            postUrl = side.url || `https://www.instagram.com/p/${side.code || ''}`;
+          } else {
+            failMessage = `${failMessage} | sidecar: ${side.message}`;
+          }
+        }
+      }
+    }
+
+    if (!success) throw new Error(failMessage);
+
+    item.status = 'posted';
+    item.postedAt = Date.now();
+    item.postUrl = postUrl;
+    item.error = undefined;
+    savePublishQueue();
+    console.log(`[IG-POSTER] Posted ${item.shortcode} on ${item.platform}: ${postUrl}`);
+    return true;
+  } catch (err) {
+    const message = (err as Error).message;
+    item.attempts = (item.attempts || 0) + 1;
+    item.status = item.attempts >= 3 ? 'failed' : 'queued';
+    item.error = message;
+    if (item.status === 'queued') {
+      item.scheduledAt = Date.now() + 5 * 60 * 1000; // retry in 5 min
+    }
+    savePublishQueue();
+    console.warn(`[IG-POSTER] Failed ${item.shortcode} on ${item.platform}: ${message}`);
+    return false;
+  } finally {
+    if (tmpFile) fs.rmSync(tmpFile, { force: true });
+  }
+}
+
+// Simple semaphore for concurrent queue processing
+class Semaphore {
+  private permits: number;
+  private waitQueue: Array<() => void> = [];
+
+  constructor(permits: number) {
+    this.permits = permits;
+  }
+
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return;
+    }
+    return new Promise(resolve => this.waitQueue.push(resolve));
+  }
+
+  release(): void {
+    this.permits++;
+    const next = this.waitQueue.shift();
+    if (next) {
+      this.permits--;
+      next();
+    }
+  }
+}
+
+const PUBLISH_CONCURRENCY = parseInt(process.env.PUBLISH_CONCURRENCY || "2", 10);
+const publishSemaphore = new Semaphore(PUBLISH_CONCURRENCY);
+
+loadPublishQueue();
+
+// Process due queue items (20s interval) - now with concurrent processing via semaphore
+setInterval(async () => {
+  const dueItems = Array.from(publishQueue.values()).filter(
+    item => item.scheduledAt <= Date.now() &&
+      !['posted', 'failed', 'publishing', 'downloading'].includes(item.status)
+  );
+
+  if (dueItems.length === 0) return;
+
+  console.log(`[IG-POSTER] Processing ${dueItems.length} due queue items (concurrency: ${PUBLISH_CONCURRENCY})`);
+
+  await Promise.all(dueItems.map(async (item) => {
+    await publishSemaphore.acquire();
+    try {
+      await publishItemNow(item);
+    } finally {
+      publishSemaphore.release();
+    }
+  }));
+}, 20 * 1000);
+
+app.post("/api/publish/connect", async (req, res) => {
+  try {
+    const { sessionId, username, password } = req.body || {};
+    if ((!username || !password) && !sessionId) {
+      return res.status(400).json({ error: "Provide sessionId (cookie â€” recommended) or username + password" });
+    }
+    if (process.env.IG_POSTER_USERNAME) {
+      process.env.IG_POSTER_USERNAME = "";
+    }
+    const side = sessionId
+      ? await runPythonSidecar(["connect", "--sessionid", sessionId, ...(username ? ["--username", username] : [])])
+      : await runPythonSidecar(["connect", "--username", username, "--password", password]);
+    if (!side.ok) throw new Error(side.message);
+    process.env.IG_POSTER_USERNAME = side.username || username || "";
+    saveInstagramPosterSession();
+    console.log(`[IG-POSTER] Connected: @${side.username || username}`);
+    res.json({ success: true, username: side.username || username, message: side.message });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/publish/test", async (req, res) => {
+  try {
+    const username = loadInstagramPosterSession();
+    if (!username) return res.json({ success: false, connected: false, message: "No session connected" });
+    const side = await runPythonSidecar(["status", "--username", username]);
+    res.json({ success: side.ok, connected: side.ok, username: side.username || username, message: side.message });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/publish/disconnect", async (req, res) => {
+  try {
+    const username = loadInstagramPosterSession();
+    if (username) await runPythonSidecar(["disconnect", "--username", username]);
+    process.env.IG_POSTER_USERNAME = "";
+    fs.rmSync(IG_SESSION_CRED_FILE, { force: true });
+    res.json({ success: true, message: "Instagram session disconnected" });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/publish/queue", (req, res) => {
+  try {
+    const { shortcode, mediaUrl, caption, scheduledAt, type, reel, platform } = req.body || {};
+    if (!mediaUrl || !shortcode) {
+      return res.status(400).json({ error: "mediaUrl and shortcode are required" });
+    }
+    if (!['video', 'image'].includes(type || 'video')) {
+      return res.status(400).json({ error: "type must be video or image" });
+    }
+    const targetPlatform = platform === 'facebook' ? 'facebook' : 'instagram';
+    if (targetPlatform === 'facebook' && !loadFacebookPosterSession()) {
+      return res.status(400).json({ error: "No Facebook page connected — connect first in the Auto-Post panel" });
+    }
+    
+    // Idempotency: prevent duplicate queue entries for same content
+    const idempotencyKey = generateIdempotencyKey(shortcode, mediaUrl, targetPlatform);
+    const existing = findByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      return res.json({ 
+        success: true, 
+        itemId: existing.id, 
+        message: "Post already queued (duplicate detected)", 
+        duplicate: true 
+      });
+    }
+    
+    const id = `post_${shortcode}_${Date.now()}`;
+    publishQueue.set(id, {
+      id,
+      shortcode,
+      mediaUrl,
+      caption,
+      type: type || 'video',
+      reel: reel !== false,
+      platform: targetPlatform,
+      scheduledAt: scheduledAt ? Number(scheduledAt) : Date.now() + 60 * 1000,
+      status: 'queued',
+      attempts: 0,
+      idempotencyKey
+    });
+    savePublishQueue();
+    console.log(`[IG-POSTER] Queued ${shortcode} (${targetPlatform}) at ${new Date(publishQueue.get(id)!.scheduledAt).toLocaleString()}`);
+    res.json({ success: true, itemId: id, message: "Post queued" });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/publish/set-platform", (req, res) => {
+  try {
+    const { itemId, platform } = req.body || {};
+    if (!itemId) return res.status(400).json({ error: "itemId is required" });
+    if (!['instagram', 'facebook'].includes(platform)) {
+      return res.status(400).json({ error: "platform must be instagram or facebook" });
+    }
+    const item = publishQueue.get(itemId);
+    if (!item) return res.status(404).json({ error: "Queue item not found" });
+    if (item.status === 'posted') {
+      return res.status(400).json({ error: "Already posted — can't change platform" });
+    }
+    if (platform === 'facebook' && !loadFacebookPosterSession()) {
+      return res.status(400).json({ error: "No Facebook page connected — connect first" });
+    }
+    if (platform === 'instagram' && !loadInstagramPosterSession()) {
+      return res.status(400).json({ error: "No Instagram account connected — connect first" });
+    }
+    item.platform = platform;
+    savePublishQueue();
+    console.log(`[IG-POSTER] Item ${itemId} platform changed -> ${platform}`);
+    res.json({ success: true, message: `Platform changed to ${platform}` });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/publish/status", async (req, res) => {
+  const username = loadInstagramPosterSession();
+  const fb = loadFacebookPosterSession();
+  const fbToken = await checkFacebookToken();
+  const items = Array.from(publishQueue.values()).sort((a, b) => a.scheduledAt - b.scheduledAt);
+  res.json({
+    success: true,
+    connected: !!username,
+    username,
+    facebookConnected: !!fb && fbToken.valid,
+    facebookTokenValid: fbToken.valid,
+    facebookPageName: (fbToken.valid && fbToken.pageName) || fb?.pageName || "",
+    facebookPageId: fb?.pageId || "",
+    facebookPages: fb?.allPages || [],
+    igGraphApiConnected: !!fb?.igUserId,
+    igGraphApiUsername: fb?.igUsername || "",
+    igGraphApiUserId: fb?.igUserId || "",
+    queue: items,
+    stats: {
+      posted: items.filter(i => i.status === 'posted').length,
+      failed: items.filter(i => i.status === 'failed').length,
+      pending: items.filter(i => ['queued', 'downloading', 'publishing'].includes(i.status)).length
+    },
+    perPlatform: {
+      instagram: {
+        connected: !!username,
+        posted: items.filter(i => i.platform === 'instagram' && i.status === 'posted').length,
+        pending: items.filter(i => i.platform === 'instagram' && ['queued', 'downloading', 'publishing'].includes(i.status)).length,
+        failed: items.filter(i => i.platform === 'instagram' && i.status === 'failed').length,
+      },
+      facebook: {
+        connected: !!fb && fbToken.valid,
+        pageName: (fbToken.valid && fbToken.pageName) || fb?.pageName || "",
+        posted: items.filter(i => i.platform === 'facebook' && i.status === 'posted').length,
+        pending: items.filter(i => i.platform === 'facebook' && ['queued', 'downloading', 'publishing'].includes(i.status)).length,
+        failed: items.filter(i => i.platform === 'facebook' && i.status === 'failed').length,
+      },
+    },
+  });
+});
+
+// ==========================================
+// FACEBOOK PAGE CONNECT (Page Access Token — no app review for your own pages)
+// ==========================================
+
+app.post("/api/facebook/pages", rateLimit(fbPagesLimiter), async (req, res) => {
+  try {
+    const { userToken } = req.body || {};
+    if (!userToken) return res.status(400).json({ error: "Provide a Facebook User Access Token" });
+    const result = await fbGraphGet<{ data: Array<{ id: string; name: string; access_token: string; category?: string }> }>("/me/accounts", userToken);
+    if (!result.ok || !result.data) {
+      return res.status(400).json({ error: result.error || "Could not list pages — is the token valid and app in development mode?" });
+    }
+    const pages = (result.data.data || []).map((p) => ({ id: p.id, name: p.name, category: p.category || "" }));
+    res.json({ success: true, pages, message: pages.length ? `Found ${pages.length} pages you manage` : "No pages found for this token" });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/facebook/connect", async (req, res) => {
+  try {
+    const { pageId, pageName, pageToken, userToken } = req.body || {};
+    let token = pageToken || "";
+    let pid = pageId || "";
+    let pname = pageName || "";
+    let allPages: FacebookPageSession["allPages"];
+    let userTokenSaved = "";
+    if (!token && userToken) {
+      const result = await fbGraphGet<{ data: Array<{ id: string; name: string; access_token: string; category?: string }> }>("/me/accounts", userToken);
+      if (result.ok && result.data && result.data.data.length) {
+        const pages = result.data.data || [];
+        const chosen = pages.find((p) => p.id === pid) || pages[0];
+        token = chosen.access_token;
+        pid = chosen.id;
+        pname = chosen.name;
+        allPages = pages.map((p) => ({ id: p.id, name: p.name, category: p.category || "" }));
+        userTokenSaved = userToken;
+      } else if (pid) {
+        const page = await fbGraphGet<{ id: string; name: string; access_token?: string }>(`/${pid}?fields=access_token,name`, userToken);
+        if (!page.ok || !page.data?.access_token) {
+          return res.status(400).json({ error: page.error || `Could not fetch page ${pid} access token — does this user token have pages permission on that page?` });
+        }
+        token = page.data.access_token;
+        pname = page.data.name || pname;
+      } else {
+        return res.status(400).json({ error: result.error || "No pages found for this token — provide a pageId or a page token" });
+      }
+    }
+    if (!token) return res.status(400).json({ error: "Provide pageToken or userToken" });
+    if (!pid) {
+      const me = await fbGraphGet<{ id: string; name: string; first_name?: string; last_name?: string }>("/me?fields=id,name,first_name,last_name", token);
+      if (!me.ok || !me.data || !me.data.id) {
+        return res.status(400).json({ error: me.error || "Could not resolve page from token — is this a valid Page Access Token?" });
+      }
+      if (me.data.first_name || me.data.last_name) {
+        return res.status(400).json({ error: `This token belongs to the personal profile "${me.data.name}" (${me.data.id}), not a Facebook Page. Pages are postable; personal profiles are not. Generate the token for your Page (e.g. Alphaburx) in Graph API Explorer → "Get Page Access Token" → select the PAGE.` });
+      }
+      pid = me.data.id;
+      pname = pname || me.data.name || "";
+    }
+    if (!pname) {
+      const check = await fbGraphGet<{ id: string; name: string }>(`/${pid}?fields=id,name`, token);
+      if (!check.ok || !check.data) return res.status(400).json({ error: check.error || "Page token invalid" });
+      pname = check.data.name || pname;
+    }
+    const session: FacebookPageSession = { pageId: pid, pageName: pname, accessToken: token, connected: true };
+    if (userTokenSaved) session.userToken = userTokenSaved;
+    if (allPages) session.allPages = allPages;
+    const ig = await fbGraphGet<{ instagram_business_account?: { id: string; username?: string } }>(
+      `/${pid}?fields=instagram_business_account{id,username}`, token
+    );
+    if (ig.ok && ig.data && ig.data.instagram_business_account) {
+      session.igUserId = ig.data.instagram_business_account.id;
+      session.igUsername = ig.data.instagram_business_account.username || "";
+      session.igGraphApi = true;
+      console.log(`[FB-POSTER] Linked Instagram business account: @${session.igUsername} (${session.igUserId}) — IG Graph API enabled`);
+    } else {
+      session.igGraphApi = false;
+      console.log(`[FB-POSTER] No Instagram business account linked to page ${pname} — IG posting falls back to instagrapi`);
+    }
+    saveFacebookPosterSession(session);
+    fbTokenValidity = null;
+    console.log(`[FB-POSTER] Connected page: ${pname} (${pid})`);
+    res.json({ success: true, pageId: pid, pageName: pname, igUserId: session.igUserId, igUsername: session.igUsername, igGraphApi: session.igGraphApi, message: `Connected to page: ${pname}` });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/facebook/switch-page", async (req, res) => {
+  try {
+    const fb = loadFacebookPosterSession();
+    if (!fb) return res.status(400).json({ error: "No Facebook session — connect first" });
+    if (!fb.userToken) {
+      return res.status(400).json({ error: "Session was connected with a Page Access Token — reconnect with a User Token to switch between pages" });
+    }
+    const { pageId } = req.body || {};
+    if (!pageId) return res.status(400).json({ error: "pageId is required" });
+    const page = await fbGraphGet<{ id: string; name: string; access_token?: string }>(
+      `/${pageId}?fields=access_token,name`, fb.userToken
+    );
+    if (!page.ok || !page.data?.access_token) {
+      return res.status(400).json({ error: page.error || `Could not fetch page ${pageId} access token — does this user token manage that page?` });
+    }
+    const session: FacebookPageSession = { ...fb, pageId, pageName: page.data.name, accessToken: page.data.access_token, connected: true };
+    const ig = await fbGraphGet<{ instagram_business_account?: { id: string; username?: string } }>(
+      `/${pageId}?fields=instagram_business_account{id,username}`, session.accessToken
+    );
+    session.igUserId = undefined;
+    session.igUsername = undefined;
+    session.igGraphApi = false;
+    if (ig.ok && ig.data && ig.data.instagram_business_account) {
+      session.igUserId = ig.data.instagram_business_account.id;
+      session.igUsername = ig.data.instagram_business_account.username || "";
+      session.igGraphApi = true;
+    }
+    saveFacebookPosterSession(session);
+    fbTokenValidity = null;
+    console.log(`[FB-POSTER] Switched active page: ${session.pageName} (${pageId})`);
+    res.json({ success: true, pageId, pageName: session.pageName, igUsername: session.igUsername, igGraphApi: session.igGraphApi, message: `Switched to page: ${session.pageName}` });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/facebook/test", async (req, res) => {
+  try {
+    const fb = loadFacebookPosterSession();
+    if (!fb) return res.json({ success: false, connected: false, message: "No Facebook page connected" });
+    const result = await fbGraphGet<{ id: string; name: string }>(`/${fb.pageId}?fields=id,name`, fb.accessToken);
+    if (!result.ok) {
+      return res.json({ success: false, connected: false, message: result.error || "Page token invalid or expired — reconnect" });
+    }
+    res.json({ success: true, connected: true, pageName: result.data?.name || fb.pageName, message: `Session valid — connected to page: ${result.data?.name || fb.pageName}` });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/facebook/disconnect", (req, res) => {
+  try {
+    fs.rmSync(FB_SESSION_CRED_FILE, { force: true });
+    fbTokenValidity = { checkedAt: 0, valid: false };
+    res.json({ success: true, message: "Facebook page disconnected" });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/publish/remove", (req, res) => {
+  const { itemId } = req.body || {};
+  if (!itemId || !publishQueue.delete(itemId)) {
+    return res.status(404).json({ error: "Item not found in queue" });
+  }
+  savePublishQueue();
+  res.json({ success: true, message: "Post removed from queue" });
+});
+
+app.post("/api/publish/clear", (req, res) => {
+  publishQueue.clear();
+  savePublishQueue();
+  res.json({ success: true, message: "Publish queue cleared" });
+});
+
+app.post("/api/publish/trigger-now", async (req, res) => {
+  try {
+    const { itemId } = req.body || {};
+    if (!itemId || !publishQueue.has(itemId)) {
+      return res.status(404).json({ error: "Item not found in queue" });
+    }
+    const item = publishQueue.get(itemId)!;
+    const ok = await publishItemNow(item);
+    res.json({ success: ok, itemId, status: item.status, postUrl: item.postUrl, error: item.error, message: ok ? "Posted successfully" : `Failed: ${item.error}` });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ==========================================
+// INSTAGRAM AUTO-POST END
+
+// ==========================================
+// ANALYTICS DASHBOARD
+// ==========================================
+
+app.get("/api/analytics/dashboard", (req, res) => {
+  try {
+    const now = new Date();
+    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
+    const items = Array.from(publishQueue.values());
+    const monthPosted = items.filter((i) => i.status === "posted" && i.postedAt && i.postedAt >= monthStart);
+    const monthFailed = items.filter((i) => i.status === "failed" && i.postedAt && i.postedAt >= monthStart);
+
+    let monthScraped = 0;
+    let monthDownloads = 0;
+    const timeSeries: Array<{ date: string; scraped: number; published: number; failed: number; downloads: number }> = [];
+    for (let d = 29; d >= 0; d--) {
+      const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - d);
+      const key = dayKey(dt);
+      const counters = analyticsDays.get(key) || { scraped: 0, downloads: 0 };
+      const dayItems = items.filter((i) => i.postedAt && dayKey(new Date(i.postedAt)) === key);
+      const entry = {
+        date: key,
+        scraped: counters.scraped,
+        published: dayItems.filter((i) => i.status === "posted").length,
+        failed: dayItems.filter((i) => i.status === "failed").length,
+        downloads: counters.downloads,
+      };
+      timeSeries.push(entry);
+      if (key.startsWith(monthKey)) {
+        monthScraped += entry.scraped;
+        monthDownloads += entry.downloads;
+      }
+    }
+
+    const stageCounts = Array.from(contentStage.values()).reduce<Record<string, number>>(
+      (acc, s) => { acc[s.platform] = (acc[s.platform] || 0) + 1; return acc; },
+      {},
+    );
+
+    res.json({
+      success: true,
+      month: { scraped: monthScraped, published: monthPosted.length, failed: monthFailed.length, downloads: monthDownloads },
+      credits: null,
+      queueHealth: {
+        queued: items.filter((i) => i.status === "queued" && i.scheduledAt > Date.now()).length,
+        publishing: items.filter((i) => ["downloading", "publishing"].includes(i.status)).length,
+        scheduled: items.filter((i) => i.status === "queued").length,
+      },
+      perPlatform: {
+        instagram: monthPosted.filter((i) => i.platform === "instagram").length,
+        facebook: monthPosted.filter((i) => i.platform === "facebook").length,
+        stage: stageCounts,
+      },
+      timeSeries,
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// ==========================================
+// CONTENT STAGE (scraped-post triage: select, order, caption, tags → queue)
+// ==========================================
+
+const CONTENT_STAGE_FILE = path.join(DATA_DIR, ".content-stage.json");
+
+interface StageItem {
+  id: string;
+  shortcode: string;
+  platform: 'instagram' | 'tiktok' | 'facebook';
+  mediaUrl: string;
+  thumbnail?: string;
+  type: 'video' | 'image';
+  originalCaption?: string;
+  caption: string;
+  tags: string[];
+selected: boolean;
+  order: number;
+  destination?: "ig" | "fb" | "both";
+  status: "new" | "queued";
+  createdAt: number;
+}
+
+const VIRAL_TAG_LIBRARY: Record<string, string[]> = {
+  instagram: ['#reels', '#explorepage', '#viral', '#trending', '#reelsinstagram', '#instagood', '#fyp', '#viralreels'],
+  tiktok: ['#fyp', '#foryou', '#viral', '#trending', '#tiktok', '#foryoupage', '#explore', '#trend'],
+  facebook: ['#reels', '#viral', '#trending', '#facebookreels', '#explore', '#fbreels', '#viralvideo'],
+};
+
+let contentStage: Map<string, StageItem> = new Map();
+const dismissedStageKeys: Map<string, number> = new Map(); // key -> timestamp
+const DISMISSED_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+function saveContentStage() {
+  try {
+    cleanupDismissedKeys();
+    fs.writeFileSync(
+      CONTENT_STAGE_FILE,
+      JSON.stringify({ items: Array.from(contentStage.values()), dismissed: Array.from(dismissedStageKeys.keys()) }, null, 2),
+      'utf8',
+    );
+  } catch (e) {
+    console.warn('[STAGE] Could not persist:', e);
+  }
+}
+
+function loadContentStage() {
+  try {
+    if (!fs.existsSync(CONTENT_STAGE_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(CONTENT_STAGE_FILE, 'utf8'));
+    if (Array.isArray(data.items)) contentStage = new Map(data.items.map((i: StageItem) => [i.id, i]));
+    if (Array.isArray(data.dismissed)) data.dismissed.forEach((k: string) => dismissedStageKeys.set(k, Date.now()));
+    console.log(`[STAGE] Loaded ${contentStage.size} staged items from disk`);
+  } catch (e) {
+    console.warn('[STAGE] Could not load:', e);
+  }
+}
+
+function cleanupDismissedKeys(): void {
+  const now = Date.now();
+  for (const [key, ts] of dismissedStageKeys.entries()) {
+    if (now - ts > DISMISSED_TTL) dismissedStageKeys.delete(key);
+  }
+}
+
+function isDismissed(key: string): boolean {
+  cleanupDismissedKeys();
+  return dismissedStageKeys.has(key);
+}
+
+function dismissKey(key: string): void {
+  cleanupDismissedKeys();
+  dismissedStageKeys.set(key, Date.now());
+}
+
+function stageKeyOf(item: { shortcode?: string; mediaUrl?: string }): string {
+  // Prefer shortcode for stable identity; fallback to a hash of mediaUrl for stability
+  if (item.shortcode) return `sc:${item.shortcode}`;
+  if (item.mediaUrl) {
+    // Extract Instagram shortcode from URL if present, otherwise hash the URL
+    const scMatch = item.mediaUrl.match(/(?:p|reel|reels)\/([A-Za-z0-9_-]{6,})/);
+    if (scMatch) return `sc:${scMatch[1]}`;
+    // Fallback: simple hash of mediaUrl for uniqueness
+    let hash = 0;
+    for (let i = 0; i < item.mediaUrl.length; i++) {
+      hash = ((hash << 5) - hash) + item.mediaUrl.charCodeAt(i);
+      hash |= 0;
+    }
+    return `url:${Math.abs(hash).toString(36)}`;
+  }
+  return 'unknown';
+}
+
+async function generateCaptionGemini(prompt: string): Promise<string | null> {
+  try {
+    if (!process.env.GEMINI_API_KEY) return null;
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const res = await ai.models.generateContent({ model, contents: prompt });
+    return res.text?.trim() || null;
+  } catch (e) {
+    console.warn('[STAGE] Gemini caption failed:', (e as Error).message);
+    return null;
+  }
+}
+
+function captionFromTemplate(item: StageItem): string {
+  const base = (item.originalCaption || item.caption || '').trim().slice(0, 1800);
+  return base || `Fresh content from the stream ✨`;
+}
+
+app.post('/api/stage/upsert', (req, res) => {
+  try {
+    const { items, force } = req.body || {};
+    if (!Array.isArray(items)) return res.status(400).json({ error: 'items array required' });
+    let added = 0;
+    const skipped: { shortcode?: string; reason: string }[] = [];
+    for (const raw of items) {
+      const mediaUrl = raw.mediaUrl || raw.videoUrl || raw.url ||
+        (Array.isArray(raw.videoCandidates) ? raw.videoCandidates[0] : '') ||
+        raw.sourceUrl || '';
+      if (!mediaUrl) {
+        skipped.push({ shortcode: raw.shortcode, reason: 'no media url' });
+        continue;
+      }
+      const key = stageKeyOf({ shortcode: raw.shortcode, mediaUrl });
+      // Manual sends (force) are never blocked by the dismissed list —
+      // only the live auto-feed honors it to avoid resurrecting removed items.
+      if (!force && isDismissed(key)) {
+        skipped.push({ shortcode: raw.shortcode, reason: 'dismissed (previously removed or cleared)' });
+        continue;
+      }
+      const id = `stage_${key}_${raw.timestamp || Date.now()}`;
+      const existing = Array.from(contentStage.values()).find((s) => stageKeyOf(s) === key);
+      if (existing) {
+        if (!existing.originalCaption && raw.caption) existing.originalCaption = String(raw.caption);
+        if (!existing.thumbnail && raw.thumbnail) existing.thumbnail = raw.thumbnail;
+        continue;
+      }
+contentStage.set(id, {
+        id,
+        shortcode: String(raw.shortcode || ""),
+        platform: ["instagram", "tiktok", "facebook"].includes(raw.platform) ? raw.platform : "instagram",
+        mediaUrl,
+        thumbnail: raw.thumbnail || "",
+        type: raw.type === "image" ? "image" : "video",
+        originalCaption: raw.caption ? String(raw.caption) : "",
+        caption: raw.caption ? String(raw.caption) : "",
+        tags: [],
+        selected: false,
+        order: 0,
+        destination: raw.platform === "facebook" ? "fb" : "ig",
+        status: "new",
+        createdAt: Date.now(),
+      });
+      added++;
+    }
+    if (added) saveContentStage();
+    if (added) trackAnalytics("scrape", added);
+    res.json({ success: true, added, skipped, total: contentStage.size });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get('/api/stage', (req, res) => {
+  const items = Array.from(contentStage.values()).sort((a, b) => {
+    if (a.order && b.order) return a.order - b.order;
+    return b.createdAt - a.createdAt;
+  });
+  res.json({
+    success: true,
+    items,
+    total: items.length,
+    selected: items.filter((i) => i.selected).length,
+  });
+});
+
+app.post('/api/stage/update', (req, res) => {
+  try {
+    const { id, caption, tags, selected, order } = req.body || {};
+    const item = contentStage.get(id);
+    if (!item) return res.status(404).json({ error: 'Stage item not found' });
+    if (typeof caption === 'string') item.caption = caption;
+    if (Array.isArray(tags)) item.tags = tags.filter((t) => typeof t === 'string').slice(0, 30);
+    if (typeof selected === 'boolean') item.selected = selected;
+    if (typeof order === 'number') item.order = Math.max(0, Math.floor(order));
+    saveContentStage();
+    res.json({ success: true, item });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/stage/remove', (req, res) => {
+  try {
+    const { id } = req.body || {};
+    const item = contentStage.get(id);
+    if (!item) return res.status(404).json({ error: 'Stage item not found' });
+    dismissKey(stageKeyOf(item));
+    contentStage.delete(id);
+    saveContentStage();
+    res.json({ success: true, message: 'Removed from stage — will not be re-added (expires in 30 days)' });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/stage/clear', (req, res) => {
+  for (const item of contentStage.values()) dismissKey(stageKeyOf(item));
+  contentStage.clear();
+  saveContentStage();
+  res.json({ success: true, message: 'Stage cleared — items will not be re-added (expires in 30 days)' });
+});
+
+app.post('/api/stage/caption', async (req, res) => {
+  try {
+    const { id, useAi } = req.body || {};
+    const item = contentStage.get(id);
+    if (!item) return res.status(404).json({ error: 'Stage item not found' });
+
+    let generated: string | null = null;
+    if (useAi) {
+      const prompt = [
+        `Write a short engaging Instagram-style caption (max 300 chars, no hashtags) for a ${item.platform} ${item.type} post.`,
+        `Original caption: ${JSON.stringify(item.originalCaption || item.caption || '(none)')}`,
+        'If the original caption is meaningful, expand it slightly. If it is generic (just "Instagram video" etc.), invent a fun catchy caption.',
+        'Reply with only the caption text.',
+      ].join('\n');
+      generated = await generateCaptionGemini(prompt);
+    }
+    const tags = item.tags.length ? item.tags : VIRAL_TAG_LIBRARY[item.platform] || [];
+    const caption = (generated || captionFromTemplate(item)) + '\n\n' + tags.join(' ');
+    if (generated) {
+      item.caption = caption;
+      saveContentStage();
+    }
+    res.json({
+      success: true,
+      caption,
+      ai: !!generated,
+      tags,
+      message: generated ? 'AI caption generated' : 'Template caption with viral tags',
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/stage/tags', (req, res) => {
+  try {
+    const { id, platform } = req.body || {};
+    const tags = VIRAL_TAG_LIBRARY[(platform || (id && contentStage.get(id)?.platform)) as string] || VIRAL_TAG_LIBRARY.instagram;
+    res.json({ success: true, tags });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/stage/push-to-queue', (req, res) => {
+  try {
+    const { scheduledAt } = req.body || {};
+    const selected = Array.from(contentStage.values())
+      .filter((i) => i.selected && i.status === 'new')
+      .sort((a, b) => (a.order || 9999) - (b.order || 9999));
+    if (!selected.length) return res.status(400).json({ error: 'No selected stage items to push' });
+    const fbSession = loadFacebookPosterSession();
+    const wantsFb = selected.some((i) => i.platform === 'facebook');
+    if (wantsFb && !fbSession) {
+      return res.status(400).json({ error: 'Selected items include Facebook posts but no Facebook page is connected — connect a page first' });
+    }
+    const base = scheduledAt ? Number(scheduledAt) : Date.now() + 60 * 1000;
+    const GAP_MS = 30 * 60 * 1000;
+    const pushed: string[] = [];
+    let igCount = 0;
+    let fbCount = 0;
+    for (let idx = 0; idx < selected.length; idx++) {
+      const item = selected[idx];
+      const id = `post_${item.shortcode || 'media'}_${Date.now()}_${idx}`;
+      const caption = (item.caption || '').trim();
+      const targetPlatform = item.platform === 'facebook' ? 'facebook' : 'instagram';
+      if (targetPlatform === 'facebook') fbCount++;
+      else igCount++;
+      publishQueue.set(id, {
+        id,
+        shortcode: item.shortcode || 'media',
+        mediaUrl: item.mediaUrl,
+        caption,
+        type: item.type,
+        reel: true,
+        platform: targetPlatform,
+        scheduledAt: base + idx * GAP_MS,
+        status: 'queued',
+        attempts: 0,
+      });
+      item.status = 'queued';
+      item.selected = false;
+      pushed.push(id);
+    }
+    savePublishQueue();
+    saveContentStage();
+    console.log(`[STAGE] Pushed ${pushed.length} staged posts into publish queue`);
+    res.json({ success: true, pushed, queued: { instagram: igCount, facebook: fbCount }, message: `Pushed ${pushed.length} posts to queue (${GAP_MS / 60000} min apart)` });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+loadAnalytics();
+loadContentStage();
+
+// ==========================================
+// CONTENT STAGE END
+// ==========================================
+// Unknown API routes â†’ clean JSON 404 (instead of SPA fallback HTML)
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: "Not found" });
+});
+
+// ==========================================
+
+// ==========================================
+
+async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -1867,6 +2200,9 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
+    // Serve the extension sources so the in-app ZIP packager works in production too
+    const extensionPath = path.join(process.cwd(), "extension");
+    app.use("/extension", express.static(extensionPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
