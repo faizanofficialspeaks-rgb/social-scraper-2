@@ -161,3 +161,6 @@ const PORT = process.env.PORT || 8000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[FB-POSTER] listening on http://0.0.0.0:${PORT}`);
 });
+
+const { startScheduler } = require('./scheduler.cjs');
+startScheduler();
