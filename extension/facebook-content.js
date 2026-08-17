@@ -384,7 +384,8 @@
 
         const vidEl = container.querySelector('video');
         const imgEl = container.querySelector('img[data-visualcompletion="media-vc-image"], img[src*="fbcdn"]');
-        const mediaUrl = vidEl?.src || vidEl?.querySelector('source')?.src || imgEl?.src || '';
+        // For videos: only use direct video URL (never thumbnail).
+        const mediaUrl = vidEl?.src || vidEl?.querySelector('source')?.src || (href?.includes('reel') || href?.includes('videos') || href?.includes('watch') ? fullSourceUrl : '') || imgEl?.src || '';
 
         if (!mediaUrl && !href) return;
 
@@ -593,8 +594,44 @@
   }
 
   // --- Controlled Auto-Scroll Engine ---
+  // API-token access gate: extension only scrapes with a valid token
+  async function assertExtensionAccess() {
+    try {
+      const stored = await chrome.storage.local.get(['apiBase', 'apiToken']);
+      const apiBase = (stored.apiBase || 'http://localhost:3010').replace(/\/$/, '');
+      const apiToken = stored.apiToken || '';
+      if (!apiToken) {
+        state.progressMessage = 'ACCESS BLOCKED: API Token missing — paste it in Extension Options.';
+        updateShadowUI();
+        broadcastState({ type: 'ACCESS_BLOCKED', reason: 'NO_TOKEN' });
+        return false;
+      }
+      const r = await fetch(apiBase + '/api/auth/validate-token?token=' + encodeURIComponent(apiToken), { cache: 'no-store' });
+      const json = await r.json();
+      if (!json.valid) {
+        state.progressMessage = 'ACCESS BLOCKED: API Token invalid — generate a new one from the dashboard.';
+        updateShadowUI();
+        broadcastState({ type: 'ACCESS_BLOCKED', reason: 'INVALID_TOKEN' });
+        return false;
+      }
+      return true;
+    } catch (e) {
+      state.progressMessage = 'ACCESS BLOCKED: Server unreachable — could not verify token (' + e.message + ')';
+      updateShadowUI();
+      broadcastState({ type: 'ACCESS_BLOCKED', reason: 'SERVER_UNREACHABLE' });
+      return false;
+    }
+  }
+
   function startAutoScroll() {
     if (state.autoScrollActive) return;
+    assertExtensionAccess().then(ok => {
+      if (!ok) return;
+      runAutoScroll();
+    });
+  }
+
+  function runAutoScroll() {
     state.autoScrollActive = true;
     state.stallCount = 0;
     state.lastScrollY = window.scrollY;

@@ -292,19 +292,32 @@ ${item.caption ? item.caption.trim() : '(No caption)'}
       }
     }
 
-    // 4. Optional: best-effort local proxy fallback when the companion web app is running
+    // 4. Optional: best-effort server-assisted fallback when the companion web app is running
+    //    (authenticated via the API token — deducts 1 credit per video, resolves reels/TikTok server-side)
     if (isVideo && shortcode) {
       try {
-        const proxyUrl = `http://127.0.0.1:3000/api/proxy-media?url=${encodeURIComponent(item.sourceUrl || item.mediaUrl || '')}&shortcode=${encodeURIComponent(shortcode)}&type=video&platform=${platform}`;
-        const proxyRes = await fetch(proxyUrl);
-        if (proxyRes.ok) {
-          const blob = await proxyRes.blob();
+        const stored = await chrome.storage.local.get(['apiBase', 'apiToken']);
+        const apiBase = (stored.apiBase || '').replace(/\/$/, '');
+        const apiToken = stored.apiToken || '';
+        if (!apiBase || !apiToken) {
+          throw new Error('No server configured in extension settings');
+        }
+        const dlUrl = `${apiBase}/api/media/download?url=${encodeURIComponent(item.sourceUrl || item.mediaUrl || '')}&shortcode=${encodeURIComponent(shortcode)}&type=video&platform=${encodeURIComponent(platform)}&token=${encodeURIComponent(apiToken)}`;
+        const dlRes = await fetch(dlUrl, { cache: 'no-store' });
+        if (dlRes.status === 402) {
+          throw new Error('Insufficient credits. 1 video = 1 credit.');
+        }
+        if (dlRes.ok) {
+          const blob = await dlRes.blob();
           const isValid = await validateVideoBlob(blob);
           if (isValid) {
             return { blob, extension: 'mp4', mimeType: 'video/mp4', isVideo: true };
           }
         }
-      } catch (e) { /* proxy not running — ignore */ }
+      } catch (e) {
+        if (e.message && e.message.includes('Insufficient credits')) throw e;
+        console.warn('[EXPORT-UTILS] Server-assisted download failed:', e);
+      }
     }
 
     // 5. Fallback: Try thumbnail image as cover JPG if video stream failed validation

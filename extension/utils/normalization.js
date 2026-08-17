@@ -224,8 +224,8 @@
       thumbnailUrl = item.thumbnail_src;
     }
 
-    // Fallback: If mediaUrl is null, use thumbnailUrl
-    if (!mediaUrl && thumbnailUrl) {
+    // Fallback: If mediaUrl is null, use thumbnailUrl (only for images — videos must have a real video URL)
+    if (!mediaUrl && thumbnailUrl && type === 'image') {
       mediaUrl = thumbnailUrl;
     }
 

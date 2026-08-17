@@ -431,7 +431,7 @@
       platform: 'tiktok',
       type: 'video',
       caption: caption,
-      mediaUrl: videoUrl || displayUrl || sourceUrl,
+      mediaUrl: videoUrl || sourceUrl,
       videoUrl: videoUrl || sourceUrl,
       displayUrl: displayUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=600',
       thumbnailUrl: displayUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400',
@@ -593,8 +593,44 @@
   }
 
   // --- Controlled Auto-Scroll Engine ---
+  // API-token access gate: extension only scrapes with a valid token
+  async function assertExtensionAccess() {
+    try {
+      const stored = await chrome.storage.local.get(['apiBase', 'apiToken']);
+      const apiBase = (stored.apiBase || 'http://localhost:3010').replace(/\/$/, '');
+      const apiToken = stored.apiToken || '';
+      if (!apiToken) {
+        state.progressMessage = 'ACCESS BLOCKED: API Token missing — paste it in Extension Options.';
+        updateShadowUI();
+        broadcastState({ type: 'ACCESS_BLOCKED', reason: 'NO_TOKEN' });
+        return false;
+      }
+      const r = await fetch(apiBase + '/api/auth/validate-token?token=' + encodeURIComponent(apiToken), { cache: 'no-store' });
+      const json = await r.json();
+      if (!json.valid) {
+        state.progressMessage = 'ACCESS BLOCKED: API Token invalid — generate a new one from the dashboard.';
+        updateShadowUI();
+        broadcastState({ type: 'ACCESS_BLOCKED', reason: 'INVALID_TOKEN' });
+        return false;
+      }
+      return true;
+    } catch (e) {
+      state.progressMessage = 'ACCESS BLOCKED: Server unreachable — could not verify token (' + e.message + ')';
+      updateShadowUI();
+      broadcastState({ type: 'ACCESS_BLOCKED', reason: 'SERVER_UNREACHABLE' });
+      return false;
+    }
+  }
+
   function startAutoScroll() {
     if (state.autoScrollActive) return;
+    assertExtensionAccess().then(ok => {
+      if (!ok) return;
+      runAutoScroll();
+    });
+  }
+
+  function runAutoScroll() {
     state.autoScrollActive = true;
     state.stallCount = 0;
     state.lastScrollY = window.scrollY;

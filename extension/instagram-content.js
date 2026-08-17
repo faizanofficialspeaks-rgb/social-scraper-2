@@ -17,6 +17,12 @@
     scrollTimer: null,
     lastScrollY: 0,
     stallCount: 0,
+    nudgeCount: 0,
+    maxNudges: 10,
+    scrollCount: 0,
+    lastItemCount: 0,
+    rateLimitedAt: 0,
+    rateLimitHits: 0,
     mediaItems: [],
     deduper: new (window.IGScraperDeduplication?.DeduplicationEngine || class {
       constructor() { this.seen = new Set(); }
@@ -40,7 +46,12 @@
     throttlingDelay: 3.0, // Delay in seconds between scraping steps
     uiMinimized: false,
     progressMessage: '⏸️ Standby. Click "Start Auto-Scroll" to begin capturing Instagram media.',
-    progressPercent: 0
+    progressPercent: 0,
+    lastStorageWrite: 0,
+    storageDirty: false,
+    limits: { maxVideos: 0, maxTotal: 0, maxScrolls: 0 },
+    cleanWatermarks: false,
+    scrollSpeed: 'normal'
   };
 
   // --- Shadow DOM Overlay Panel Elements ---
@@ -92,58 +103,106 @@
 
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       try {
-        chrome.storage.local.set({
-          ig_live_stream: state.mediaItems,
-          ig_stats: state.stats,
-          ig_profile: getProfileUsername(),
-          ig_is_scraping: state.autoScrollActive,
-          ig_target_media_type: state.targetMediaType,
-          lastUpdated: Date.now()
-        });
+        // Throttled storage writes: full payload only when items changed, else max every 30s
+        const now = Date.now();
+        if (state.storageDirty || now - state.lastStorageWrite > 30000) {
+          state.storageDirty = false;
+          state.lastStorageWrite = now;
+          chrome.storage.local.set({
+            ig_live_stream: state.mediaItems,
+            ig_stats: state.stats,
+            ig_profile: getProfileUsername(),
+            ig_is_scraping: state.autoScrollActive,
+            ig_target_media_type: state.targetMediaType,
+            lastUpdated: Date.now()
+          });
+        }
       } catch (e) { /* ignore */ }
     }
   }
 
-  // Listen to incoming app commands
-  function handleAppCommand(eventData) {
-    if (!eventData || eventData.source !== 'IG_SCRAPER_APP') return;
-    console.log(`${LOG_PREFIX} Received command from Web App:`, eventData.type);
+  // Listen to incoming app commands (web app, BroadcastChannel, same-page messages)
+  const COMMAND_SOURCE = 'IG_SCRAPER_APP';
 
-    if (eventData.type === 'SET_TARGET_MEDIA_TYPE') {
-      state.targetMediaType = eventData.targetMediaType || 'all';
-      console.log(`${LOG_PREFIX} Target media type set to: ${state.targetMediaType}`);
-      broadcastState({ type: 'MEDIA_TYPE_CHANGED' });
+  function handleAppCommand(eventData) {
+    if (!eventData || eventData.source !== COMMAND_SOURCE) return;
+    console.log(`${LOG_PREFIX} Command received:`, eventData.type);
+
+    switch (eventData.type) {
+      case 'SET_TARGET_MEDIA_TYPE':
+        state.targetMediaType = eventData.targetMediaType || 'all';
+        state.storageDirty = true;
+        broadcastState({ type: 'MEDIA_TYPE_CHANGED' });
+        break;
+
+      case 'SET_WATERMARK_CLEANING':
+        state.cleanWatermarks = !!eventData.enabled;
+        broadcastState({ type: 'WATERMARK_CLEANING_CHANGED' });
+        break;
+
+      case 'SET_SCROLL_SPEED':
+        state.scrollSpeed = eventData.speed || 'normal';
+        break;
+
+      case 'SET_EXTRACTION_LIMITS':
+        state.limits = {
+          maxVideos: eventData.maxVideos || 0,
+          maxTotal: eventData.maxTotal || 0,
+          maxScrolls: eventData.maxScrolls || 0
+        };
+        broadcastState({ type: 'LIMITS_UPDATED' });
+        break;
+
+      case 'SET_THROTTLING_DELAY':
+        state.throttlingDelay = typeof eventData.delay === 'number' ? eventData.delay : 3.0;
+        if (state.autoScrollActive) {
+          stopAutoScroll();
+          startAutoScroll();
+        }
+        broadcastState({ type: 'THROTTLING_DELAY_CHANGED' });
+        break;
+
+      case 'NAVIGATE_PROFILE':
+        if (eventData.username) {
+          const cleanUser = eventData.username.replace('@', '').trim();
+          sessionStorage.setItem('IG_AUTO_START_SCRAPE', 'true');
+          window.location.href = `https://www.instagram.com/${cleanUser}/?autoscrape=1`;
+        }
+        break;
+
+      case 'START_AUTO_SCROLL':
+      case 'START_SCRAPING':
+        startAutoScroll();
+        break;
+
+      case 'STOP_AUTO_SCROLL':
+      case 'STOP_SCRAPING':
+        stopAutoScroll();
+        break;
+
+      case 'DOWNLOAD_ZIP':
+        downloadAllZip();
+        break;
+
+      case 'CLEAR_RESULTS':
+      case 'CLEAR_PLATFORM_RESULTS':
+        if (!eventData.platform || eventData.platform === 'instagram') {
+          clearResults();
+        }
+        break;
+
+      case 'REQUEST_SYNC':
+        broadcastState({ type: 'SYNC_RESPONSE' });
+        break;
+
+      default:
+        break;
     }
-    if (eventData.type === 'SET_WATERMARK_CLEANING') {
-      state.cleanWatermarks = !!eventData.enabled;
-      console.log(`${LOG_PREFIX} Watermark cleaning set to: ${state.cleanWatermarks}`);
-    }
-    if (eventData.type === 'SET_SCROLL_SPEED') {
-      state.scrollSpeed = eventData.speed || 'normal';
-      console.log(`${LOG_PREFIX} Scroll speed set to: ${state.scrollSpeed}`);
-    }
-    if (eventData.type === 'SET_THROTTLING_DELAY') {
-      state.throttlingDelay = typeof eventData.delay === 'number' ? eventData.delay : 3.0;
-      console.log(`${LOG_PREFIX} Scraping throttling delay set to: ${state.throttlingDelay}s`);
-      broadcastState({ type: 'THROTTLING_DELAY_CHANGED' });
-    }
-    if (eventData.type === 'NAVIGATE_PROFILE') {
-      if (eventData.username) {
-        window.location.href = `https://www.instagram.com/${eventData.username}/`;
-      }
-    }
-    if (eventData.type === 'START_AUTO_SCROLL') startAutoScroll();
-    if (eventData.type === 'STOP_AUTO_SCROLL') stopAutoScroll();
-    if (eventData.type === 'DOWNLOAD_ZIP') downloadAllZip();
-    if (eventData.type === 'CLEAR_RESULTS' || eventData.type === 'CLEAR_PLATFORM_RESULTS') {
-      if (!eventData.platform || eventData.platform === 'instagram') clearResults();
-    }
-    if (eventData.type === 'REQUEST_SYNC') broadcastState({ type: 'SYNC_RESPONSE' });
   }
 
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((request) => {
-      if (request && request.source === 'IG_SCRAPER_APP') {
+      if (request && request.source === COMMAND_SOURCE) {
         handleAppCommand(request);
       }
     });
@@ -173,64 +232,6 @@
     }
   }
 
-  // Listen to incoming app commands
-  function handleAppCommand(eventData) {
-    if (!eventData || eventData.source !== 'IG_SCRAPER_APP') return;
-    console.log(`${LOG_PREFIX} Command received:`, eventData.type);
-
-    if (eventData.type === 'SET_TARGET_MEDIA_TYPE') {
-      state.targetMediaType = eventData.targetMediaType || 'all';
-      broadcastState({ type: 'MEDIA_TYPE_CHANGED' });
-    }
-    if (eventData.type === 'SET_EXTRACTION_LIMITS') {
-      state.limits = {
-        maxVideos: eventData.maxVideos || 0,
-        maxTotal: eventData.maxTotal || 0,
-        maxScrolls: eventData.maxScrolls || 0
-      };
-      console.log(`${LOG_PREFIX} Extraction limits set:`, state.limits);
-      broadcastState({ type: 'LIMITS_UPDATED' });
-    }
-    if (eventData.type === 'SET_THROTTLING_DELAY') {
-      state.throttlingDelay = typeof eventData.delay === 'number' ? eventData.delay : 3.0;
-      console.log(`${LOG_PREFIX} Scraping throttling delay set to: ${state.throttlingDelay}s`);
-      if (state.autoScrollActive) {
-        stopAutoScroll();
-        startAutoScroll();
-      }
-      broadcastState({ type: 'THROTTLING_DELAY_CHANGED' });
-    }
-    if (eventData.type === 'NAVIGATE_PROFILE') {
-      if (eventData.username) {
-        const cleanUser = eventData.username.replace('@', '').trim();
-        sessionStorage.setItem('IG_AUTO_START_SCRAPE', 'true');
-        window.location.href = `https://www.instagram.com/${cleanUser}/?autoscrape=1`;
-      }
-    }
-    if (eventData.type === 'START_AUTO_SCROLL' || eventData.type === 'START_SCRAPING') {
-      startAutoScroll();
-    }
-    if (eventData.type === 'STOP_AUTO_SCROLL' || eventData.type === 'STOP_SCRAPING') {
-      stopAutoScroll();
-    }
-    if (eventData.type === 'CLEAR_RESULTS' || eventData.type === 'CLEAR_PLATFORM_RESULTS') {
-      if (!eventData.platform || eventData.platform === 'instagram') {
-        clearResults();
-      }
-    }
-    if (eventData.type === 'REQUEST_SYNC') {
-      broadcastState({ type: 'SYNC_RESPONSE' });
-    }
-  }
-
-  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-    chrome.runtime.onMessage.addListener((request) => {
-      if (request && request.source === 'IG_SCRAPER_APP') {
-        handleAppCommand(request);
-      }
-    });
-  }
-
   // Periodic heartbeat broadcast for browser profile detection
   setInterval(() => {
     const isEdge = navigator.userAgent.includes('Edg/');
@@ -252,10 +253,18 @@
 
   // --- 1. Network Interceptor Listener ---
   window.addEventListener('instagram-scraper-api-response', function (event) {
-    if (!state.autoScrollActive && !state.isScraping) return;
     if (!event.detail || !event.detail.data) return;
 
     try {
+      // Rate-limit detection: pause the scroll engine with exponential backoff
+      const status = event.detail.status || 0;
+      if (status === 429 || (status >= 400 && event.detail.data.rateLimited)) {
+        handleRateLimit();
+        return;
+      }
+
+      if (!state.autoScrollActive && !state.isScraping) return;
+
       const payload = event.detail.data;
       const url = event.detail.url || '';
 
@@ -276,6 +285,7 @@
           if (!state.deduper.isDuplicate(item)) {
             state.mediaItems.push(item);
             addedCount++;
+            state.storageDirty = true;
 
             // Update stats
             state.stats.total++;
@@ -342,7 +352,9 @@
         const type = isVideo ? 'video' : (isCarousel ? 'carousel' : 'image');
 
         const caption = (imgEl?.alt && imgEl.alt !== 'Instagram post') ? imgEl.alt : `Instagram ${type.toUpperCase()} (@${username})`;
-        const mediaUrl = videoSrc || imgSrc || fullSourceUrl;
+        // For videos: only use direct video URL or page URL (never thumbnail).
+        // Thumbnail goes in thumbnailUrl for preview.
+        const mediaUrl = isVideo ? (videoSrc || fullSourceUrl) : (imgSrc || fullSourceUrl);
         const thumbnailUrl = imgSrc || videoEl?.poster || 'https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=600';
 
         // Extract engagement metrics from overlay elements/spans
@@ -377,6 +389,10 @@
           }
         });
 
+        // Best-effort real timestamp from feed article <time datetime> (profile grids have none)
+        const timeEl = containerNode.querySelector('time[datetime]');
+        const realTimestamp = timeEl ? timeEl.getAttribute('datetime') : null;
+
         const domItem = {
           id: `ig_${shortcode}`,
           shortcode: shortcode,
@@ -391,8 +407,8 @@
           sourceUrl: fullSourceUrl,
           author: username,
           username: username,
-          publishedAt: new Date().toISOString(),
-          publishedFormatted: 'Recently',
+          publishedAt: realTimestamp || undefined,
+          publishedFormatted: realTimestamp ? new Date(realTimestamp).toLocaleDateString() : 'Recently',
           likeCount: likeCount,
           commentCount: commentCount,
           viewCount: viewCount
@@ -400,6 +416,7 @@
 
         if (!state.deduper.isDuplicate(domItem)) {
           state.mediaItems.push(domItem);
+          state.storageDirty = true;
           state.stats.total++;
           if (type === 'video') state.stats.videos++;
           else if (type === 'carousel') state.stats.carousels++;
@@ -437,6 +454,7 @@
 
           if (!state.deduper.isDuplicate(fallbackItem)) {
             state.mediaItems.push(fallbackItem);
+            state.storageDirty = true;
             state.stats.total++;
             state.stats.videos++;
             updateUI();
@@ -470,6 +488,7 @@
 
           if (!state.deduper.isDuplicate(fallbackItem)) {
             state.mediaItems.push(fallbackItem);
+            state.storageDirty = true;
             state.stats.total++;
             state.stats.images++;
             updateUI();
@@ -526,132 +545,323 @@
   }
 
   // --- 3. Controlled Auto-Scroll Engine ---
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // API-token access gate: extension only scrapes with a valid token
+  async function assertExtensionAccess() {
+    try {
+      const stored = await chrome.storage.local.get(['apiBase', 'apiToken']);
+      const apiBase = (stored.apiBase || 'http://localhost:3010').replace(/\/$/, '');
+      const apiToken = stored.apiToken || '';
+      if (!apiToken) {
+        state.progressMessage = 'ACCESS BLOCKED: API Token missing — paste it in Extension Options.';
+        updateUI();
+        broadcastState({ type: 'ACCESS_BLOCKED', reason: 'NO_TOKEN' });
+        return false;
+      }
+      const r = await fetch(apiBase + '/api/auth/validate-token?token=' + encodeURIComponent(apiToken), { cache: 'no-store' });
+      const json = await r.json();
+      if (!json.valid) {
+        state.progressMessage = 'ACCESS BLOCKED: API Token invalid — generate a new one from the dashboard.';
+        updateUI();
+        broadcastState({ type: 'ACCESS_BLOCKED', reason: 'INVALID_TOKEN' });
+        return false;
+      }
+      return true;
+    } catch (e) {
+      state.progressMessage = 'ACCESS BLOCKED: Server unreachable — could not verify token (' + e.message + ')';
+      updateUI();
+      broadcastState({ type: 'ACCESS_BLOCKED', reason: 'SERVER_UNREACHABLE' });
+      return false;
+    }
+  }
+
   function startAutoScroll() {
     if (state.autoScrollActive) return;
-    state.autoScrollActive = true;
-    state.stallCount = 0;
-    state.lastScrollY = window.scrollY;
-    console.log(`${LOG_PREFIX} Auto-scroll engine started.`);
-    state.progressMessage = 'Auto-scrolling active...';
-    updateUI();
-    broadcastState({ type: 'STATE_UPDATE', isScraping: true });
+    assertExtensionAccess().then(ok => {
+      if (!ok) return;
+      state.autoScrollActive = true;
+      state.stallCount = 0;
+      state.nudgeCount = 0;
+      state.scrollCount = 0;
+      state.lastScrollY = window.scrollY;
+      state.lastItemCount = state.mediaItems.length;
+      // A fresh manual start resets the rate-limit escalation counter
+      if (state.rateLimitHits >= 3) state.rateLimitHits = 0;
+      console.log(`${LOG_PREFIX} Auto-scroll engine started.`);
+      state.progressMessage = 'Auto-scrolling active...';
+      updateUI();
+      broadcastState({ type: 'STATE_UPDATE', isScraping: true });
 
-    function step() {
+      step();
+    });
+  }
+
+  function checkExtractionLimits() {
+    if (!state.limits) return false;
+    const { maxVideos, maxTotal, maxScrolls } = state.limits;
+    if (maxVideos > 0 && state.stats.videos >= maxVideos) {
+      console.log(`${LOG_PREFIX} Target videos limit reached (${state.stats.videos}/${maxVideos}). Auto-stopping.`);
+      stopAutoScroll();
+      state.progressMessage = `Target video limit reached (${state.stats.videos}/${maxVideos}). Auto-stopped.`;
+      updateUI();
+      return true;
+    }
+    if (maxTotal > 0 && state.stats.total >= maxTotal) {
+      console.log(`${LOG_PREFIX} Target total items limit reached (${state.stats.total}/${maxTotal}). Auto-stopping.`);
+      stopAutoScroll();
+      state.progressMessage = `Target total limit reached (${state.stats.total}/${maxTotal}). Auto-stopped.`;
+      updateUI();
+      return true;
+    }
+    if (maxScrolls > 0 && state.scrollCount >= maxScrolls) {
+      console.log(`${LOG_PREFIX} Scroll count limit reached (${state.scrollCount}/${maxScrolls}). Auto-stopping.`);
+      stopAutoScroll();
+      state.progressMessage = `Max scroll steps reached (${state.scrollCount}/${maxScrolls}). Auto-stopped.`;
+      updateUI();
+      return true;
+    }
+    return false;
+  }
+
+  function step() {
+    if (!state.autoScrollActive) return;
+
+    state.scrollCount++;
+    if (checkExtractionLimits()) return;
+
+    // Scroll smoothly down
+    const scrollStep = 600 + Math.floor(Math.random() * 200);
+    window.scrollBy({ top: scrollStep, behavior: 'smooth' });
+
+    // Run fallback DOM scan as backup
+    inspectDOMForMedia();
+
+    const timer1 = setTimeout(() => {
       if (!state.autoScrollActive) return;
 
-      // Check extraction limits
-      if (state.limits) {
-        const { maxVideos, maxTotal } = state.limits;
-        if (maxVideos > 0 && state.stats.videos >= maxVideos) {
-          console.log(`${LOG_PREFIX} Target videos limit reached (${state.stats.videos}/${maxVideos}). Auto-stopping.`);
-          stopAutoScroll();
-          state.progressMessage = `Target video limit reached (${state.stats.videos}/${maxVideos}). Auto-stopped.`;
-          updateUI();
-          return;
-        }
-        if (maxTotal > 0 && state.stats.total >= maxTotal) {
-          console.log(`${LOG_PREFIX} Target total items limit reached (${state.stats.total}/${maxTotal}). Auto-stopping.`);
-          stopAutoScroll();
-          state.progressMessage = `Target total limit reached (${state.stats.total}/${maxTotal}). Auto-stopped.`;
-          updateUI();
-          return;
-        }
+      const currentScrollY = window.scrollY;
+      const maxScrollY = document.body.scrollHeight - window.innerHeight;
+
+      // New items arrived → the engine is healthy, reset stall/nudge counters
+      if (state.mediaItems.length !== state.lastItemCount) {
+        state.lastItemCount = state.mediaItems.length;
+        state.stallCount = 0;
+        state.nudgeCount = 0;
       }
 
-      // Scroll smoothly down
-      const scrollStep = 600 + Math.floor(Math.random() * 200);
-      window.scrollBy({ top: scrollStep, behavior: 'smooth' });
+      if (Math.abs(currentScrollY - state.lastScrollY) < 10) {
+        state.stallCount++;
+        console.log(`${LOG_PREFIX} Scroll stalled count: ${state.stallCount}`);
+      } else {
+        state.stallCount = 0;
+      }
 
-      // Run fallback DOM scan as backup
-      inspectDOMForMedia();
+      state.lastScrollY = currentScrollY;
 
-      const timer1 = setTimeout(() => {
-        if (!state.autoScrollActive) return;
-
-        const currentScrollY = window.scrollY;
-        const maxScrollY = document.body.scrollHeight - window.innerHeight;
-
-        if (Math.abs(currentScrollY - state.lastScrollY) < 10) {
-          state.stallCount++;
-          console.log(`${LOG_PREFIX} Scroll stalled count: ${state.stallCount}`);
-        } else {
-          state.stallCount = 0;
-        }
-
-        state.lastScrollY = currentScrollY;
-
-        if (currentScrollY >= maxScrollY - 100 || state.stallCount >= 5) {
-          // Instead of stopping, nudge scroll position up and down to trigger dynamic Instagram post/reel loading
-          window.scrollBy({ top: -200, behavior: 'smooth' });
-          state.progressMessage = '⏳ Waiting for Instagram to load more posts/reels...';
+      if (currentScrollY >= maxScrollY - 100 || state.stallCount >= 5) {
+        state.nudgeCount++;
+        if (state.nudgeCount > state.maxNudges) {
+          console.log(`${LOG_PREFIX} Bottom reached, no new media after ${state.maxNudges} nudges.`);
+          stopAutoScroll();
+          state.progressMessage = '🏁 Reached end of page — no more media loading. Scrape complete.';
           updateUI();
-
-          const nudgeTimer = setTimeout(() => {
-            if (!state.autoScrollActive) return;
-            window.scrollBy({ top: 450, behavior: 'smooth' });
-            state.stallCount = 0;
-            const stepDelayMs = Math.max(800, Math.round((state.throttlingDelay || 3.0) * 1000));
-            const timer3 = setTimeout(step, stepDelayMs);
-            state.scrollTimer = timer3;
-            activeScrollTimers.push(timer3);
-          }, 1200);
-          state.scrollTimer = nudgeTimer;
-          activeScrollTimers.push(nudgeTimer);
           return;
         }
 
-        // Schedule next scroll step based on throttling delay
-        const stepDelayMs = Math.max(500, Math.round((state.throttlingDelay || 3.0) * 1000) + Math.floor(Math.random() * 600));
-        const timer2 = setTimeout(step, stepDelayMs);
-        state.scrollTimer = timer2;
-        activeScrollTimers.push(timer2);
-      }, 1000);
+        // Nudge scroll position up and down to trigger dynamic Instagram post/reel loading
+        window.scrollBy({ top: -200, behavior: 'smooth' });
+        state.progressMessage = `⏳ Waiting for Instagram to load more posts/reels... (nudge ${state.nudgeCount}/${state.maxNudges})`;
+        updateUI();
 
-      state.scrollTimer = timer1;
-      activeScrollTimers.push(timer1);
-    }
+        const nudgeTimer = setTimeout(() => {
+          if (!state.autoScrollActive) return;
+          window.scrollBy({ top: 450, behavior: 'smooth' });
+          state.stallCount = 0;
+          const stepDelayMs = Math.max(800, Math.round((state.throttlingDelay || 3.0) * 1000));
+          const timer3 = setTimeout(step, stepDelayMs);
+          state.scrollTimer = timer3;
+          activeScrollTimers.push(timer3);
+        }, 1200);
+        state.scrollTimer = nudgeTimer;
+        activeScrollTimers.push(nudgeTimer);
+        return;
+      }
 
-    step();
+      // Schedule next scroll step based on throttling delay
+      const stepDelayMs = Math.max(500, Math.round((state.throttlingDelay || 3.0) * 1000) + Math.floor(Math.random() * 600));
+      const timer2 = setTimeout(step, stepDelayMs);
+      state.scrollTimer = timer2;
+      activeScrollTimers.push(timer2);
+    }, 1000);
+
+    state.scrollTimer = timer1;
+    activeScrollTimers.push(timer1);
   }
 
   function stopAutoScroll() {
     state.autoScrollActive = false;
     clearAllScrollTimers();
-    console.log(`${LOG_PREFIX} Auto-scroll stopped immediately.`);
+    console.log(`${LOG_PREFIX} Auto-scroll stopped.`);
     state.progressMessage = 'Scraper stopped.';
     updateUI();
     broadcastState({ type: 'STATE_UPDATE', isScraping: false });
   }
 
+  // Pause the engine when Instagram throttles us (HTTP 429), then auto-resume after a cooldown
+  function handleRateLimit() {
+    const wasActive = state.autoScrollActive || state.isScraping;
+    const now = Date.now();
+    if (now - state.rateLimitedAt < 30000) return; // burst dedupe
+    state.rateLimitedAt = now;
+    state.rateLimitHits++;
+
+    if (wasActive) stopAutoScroll();
+
+    if (state.rateLimitHits >= 3) {
+      state.progressMessage = '🚦 Stopped: repeated Instagram rate limiting (429). Wait a few minutes, then start again.';
+      updateUI();
+      broadcastState({ type: 'RATE_LIMITED' });
+      return;
+    }
+
+    const waitSec = Math.min(45 + state.rateLimitHits * 45, 180);
+    state.progressMessage = wasActive
+      ? `🚦 Instagram rate limit (429) — pausing ${waitSec}s, then resuming automatically...`
+      : `🚦 Instagram rate limit detected (429). Retrying in ${waitSec}s...`;
+    updateUI();
+    setTimeout(() => {
+      if (wasActive && !state.autoScrollActive && state.rateLimitHits < 3) {
+        state.progressMessage = 'Rate-limit cooldown finished — resuming.';
+        startAutoScroll();
+      }
+    }, waitSec * 1000);
+  }
+
+  // Rehydrate previously scraped items so reloads don't reset the session
+  function restorePersistedState() {
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return;
+    chrome.storage.local.get(['ig_live_stream', 'ig_stats'], (data) => {
+      try {
+        const items = data.ig_live_stream;
+        if (Array.isArray(items) && items.length > 0) {
+          state.mediaItems = items;
+          items.forEach(it => state.deduper.isDuplicate(it));
+          state.lastItemCount = items.length;
+          if (data.ig_stats) state.stats = { ...state.stats, ...data.ig_stats };
+          state.progressMessage = `Restored ${items.length} previously scraped items from session. Start Auto-Scroll to continue.`;
+          updateUI();
+        }
+      } catch (e) {
+        console.warn(`${LOG_PREFIX} Failed to restore persisted state:`, e);
+      }
+    });
+  }
+
   // --- 4. Download & ZIP Engine ---
+  async function fetchMediaWithRetry(item, attempts = 3) {
+    const exportUtils = window.IGScraperExport;
+    if (!exportUtils || !exportUtils.fetchValidatedMedia) {
+      const res = await fetch(item.videoUrl || item.mediaUrl);
+      const blob = await res.blob();
+      const isValid = blob.size > 50000 && !blob.type.includes('html');
+      return { blob, extension: (item.type === 'video' && isValid) ? 'mp4' : 'jpg', mimeType: 'application/octet-stream' };
+    }
+    let lastErr;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await exportUtils.fetchValidatedMedia(item);
+      } catch (e) {
+        lastErr = e;
+        if (i < attempts - 1) {
+          console.warn(`${LOG_PREFIX} Fetch attempt ${i + 1} failed for ${item.shortcode || item.id}, retrying in ${1.5 * Math.pow(2, i)}s...`);
+          await sleep(1500 * Math.pow(2, i) + Math.random() * 1000);
+        }
+      }
+    }
+    throw lastErr;
+  }
+
+  /**
+   * Resolve every downloadable binary for an item.
+   * Carousel items expand into their children (video/image) via the same validated pipeline.
+   */
+  async function collectItemMedia(item) {
+    const exportUtils = window.IGScraperExport;
+    const children = Array.isArray(item.carouselItems) ? item.carouselItems : null;
+
+    // Carousels: keep original item as context; children carry their own URLs
+    if (item.type === 'carousel' && children && children.length > 0) {
+      const blobs = [];
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        if (!child || typeof child !== 'object') continue;
+        if (child.type === 'carousel') continue; // nested carousels are not expandable
+        const childItem = {
+          ...item,
+          id: `${item.id}_${i + 1}`,
+          shortcode: item.shortcode ? `${item.shortcode}_${i + 1}` : item.shortcode,
+          type: child.type || 'image',
+          mediaUrl: child.mediaUrl,
+          videoUrl: child.type === 'video' ? (child.mediaUrl || child.videoUrl) : undefined,
+          videoCandidates: child.videoCandidates || [],
+          thumbnailUrl: child.thumbnailUrl || item.thumbnailUrl,
+          displayUrl: child.thumbnailUrl || item.thumbnailUrl
+        };
+        try {
+          const mediaRes = await fetchMediaWithRetry(childItem);
+          blobs.push({ mediaRes, item: childItem });
+        } catch (e) {
+          console.warn(`${LOG_PREFIX} Carousel child ${i + 1} of ${item.shortcode} failed:`, e);
+          state.stats.failed++;
+        }
+      }
+      if (blobs.length === 0) {
+        // All children failed — fall back to the cover media
+        const mediaRes = await fetchMediaWithRetry(item);
+        blobs.push({ mediaRes, item });
+      }
+      return blobs;
+    }
+
+    const mediaRes = await fetchMediaWithRetry(item);
+    return [{ mediaRes, item }];
+  }
+
+  function buildMediaFilename(item, index) {
+    const filenameUtil = window.IGScraperFilename;
+    if (filenameUtil && filenameUtil.generateMediaFilename) {
+      return filenameUtil.generateMediaFilename(item, index);
+    }
+    const cleanUser = (item.username || 'ig').replace(/[^a-zA-Z0-9_]/g, '');
+    const ext = item.type === 'video' ? 'mp4' : 'jpg';
+    return `${cleanUser}_${item.shortcode}_${index !== null && index !== undefined ? index + 1 : ''}.${ext}`.replace(/_\./, '.');
+  }
+
   async function downloadIndividualItem(item) {
     try {
       state.progressMessage = `Downloading @${item.username || 'user'} media...`;
       updateUI();
 
       const exportUtils = window.IGScraperExport;
-      const mediaRes = exportUtils && exportUtils.fetchValidatedMedia 
-        ? await exportUtils.fetchValidatedMedia(item)
-        : await (async () => {
-            const res = await fetch(item.videoUrl || item.mediaUrl);
-            const blob = await res.blob();
-            const isValid = blob.size > 50000 && !blob.type.includes('html');
-            return { blob, extension: (item.type === 'video' && isValid) ? 'mp4' : 'jpg' };
-          })();
+      const blobs = await collectItemMedia(item);
 
-      const cleanUser = (item.username || 'ig').replace(/[^a-zA-Z0-9_]/g, '');
-      const filename = `${cleanUser}_${item.shortcode}.${mediaRes.extension}`;
-
-      if (exportUtils && exportUtils.downloadBlob) {
-        exportUtils.downloadBlob(mediaRes.blob, mediaRes.mimeType || 'application/octet-stream', filename);
-      } else {
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(mediaRes.blob);
-        link.download = filename;
-        link.click();
+      for (let i = 0; i < blobs.length; i++) {
+        const { mediaRes, item: blbItem } = blobs[i];
+        const filename = buildMediaFilename(blbItem, i);
+        if (exportUtils && exportUtils.downloadBlob) {
+          exportUtils.downloadBlob(mediaRes.blob, mediaRes.mimeType || 'application/octet-stream', filename);
+        } else {
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(mediaRes.blob);
+          link.download = filename;
+          link.click();
+        }
       }
 
-      state.progressMessage = `Downloaded ${filename}`;
+      state.progressMessage = `Downloaded ${blobs.length} file${blobs.length > 1 ? 's' : ''} for ${item.shortcode}`;
       updateUI();
     } catch (err) {
       console.error(`${LOG_PREFIX} Download failed for item ${item.id}:`, err);
@@ -683,6 +893,7 @@
       const metadataJson = exportUtils ? exportUtils.exportToJson(state.mediaItems) : JSON.stringify(state.mediaItems, null, 2);
       zip.file('metadata.json', metadataJson);
 
+      const stamp = new Date().toISOString().split('T')[0];
       let completed = 0;
 
       for (let i = 0; i < state.mediaItems.length; i++) {
@@ -692,23 +903,24 @@
         updateUI();
 
         try {
-          const mediaRes = exportUtils && exportUtils.fetchValidatedMedia 
-            ? await exportUtils.fetchValidatedMedia(item)
-            : await (async () => {
-                const res = await fetch(item.videoUrl || item.mediaUrl);
-                const blob = await res.blob();
-                const isValid = blob.size > 50000 && !blob.type.includes('html');
-                return { blob, extension: (item.type === 'video' && isValid) ? 'mp4' : 'jpg' };
-              })();
+          const mediaBlobs = await collectItemMedia(item);
+          const userDir = `instagram/${(item.username || 'instagram_user').replace(/[^a-zA-Z0-9_]/g, '')}`;
+          const itemDir = `${userDir}/${item.shortcode || item.id}`;
 
-          const cleanUser = (item.username || 'ig').replace(/[^a-zA-Z0-9_]/g, '');
-          const fname = `instagram_${cleanUser}_${item.shortcode}.${mediaRes.extension}`;
-          zip.file(fname, mediaRes.blob);
-          completed++;
+          // Organize carousel children + single media into per-post folders
+          for (let k = 0; k < mediaBlobs.length; k++) {
+            const { mediaRes, item: blbItem } = mediaBlobs[k];
+            const fname = buildMediaFilename(blbItem, mediaBlobs.length > 1 ? k : null);
+            zip.file(`${itemDir}/${fname}`, mediaRes.blob);
+            completed++;
+          }
         } catch (e) {
           console.warn(`${LOG_PREFIX} Failed fetching item ${item.id} for ZIP:`, e);
           state.stats.failed++;
         }
+
+        // Human-like pacing between network fetches (avoids burst rate-limiting)
+        await sleep(350 + Math.floor(Math.random() * 500));
       }
 
       state.progressMessage = 'Compressing ZIP package...';
@@ -716,7 +928,7 @@
       updateUI();
 
       const zipBlob = await zip.generateAsync({ type: 'blob' });
-      const zipName = `instagram_${getProfileUsername()}_${new Date().toISOString().split('T')[0]}.zip`;
+      const zipName = `instagram_${getProfileUsername()}_${stamp}.zip`;
 
       if (exportUtils) {
         exportUtils.downloadBlob(zipBlob, 'application/zip', zipName);
@@ -759,8 +971,17 @@
     state.stats.images = 0;
     state.stats.carousels = 0;
     state.stats.failed = 0;
+    state.scrollCount = 0;
+    state.nudgeCount = 0;
+    state.stallCount = 0;
+    state.lastItemCount = 0;
+    state.rateLimitHits = 0;
+    state.storageDirty = true;
     state.progressMessage = 'Cleared results.';
     state.progressPercent = 0;
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      try { chrome.storage.local.remove(['ig_live_stream', 'ig_stats']); } catch (e) { /* ignore */ }
+    }
     updateUI();
   }
 
@@ -1045,5 +1266,8 @@
   } else {
     setTimeout(createUIOverlay, 1500);
   }
+
+  // Rehydrate the previous scrape session so reloads keep collected items + dedup state
+  setTimeout(restorePersistedState, 2500);
 
 })();

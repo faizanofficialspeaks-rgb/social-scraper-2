@@ -35,7 +35,8 @@ import {
   Video,
   Music,
   Activity,
-  Key
+  Key,
+  Send
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { useExtensionRealtime, REAL_KITTY_ACCOUNTS } from '../lib/useExtensionRealtime';
@@ -43,11 +44,13 @@ import { SessionAuthGuard } from './SessionAuthGuard';
 import { MediaPreviewModal } from './MediaPreviewModal';
 import { exportToJson, exportToCsv, exportToTxt } from '../utils/export';
 import { fetchMediaBinary } from '../utils/watermarkRemover';
+import { API_BASE } from '../lib/apiBase';
 
 interface RealtimeStreamDashboardProps {
   onDownloadZip: () => void;
   defaultPlatform?: 'instagram' | 'tiktok' | 'facebook';
   onPlatformChange?: (platform: 'instagram' | 'tiktok' | 'facebook') => void;
+  onNavigate?: (tab: 'stage') => void;
 }
 
 type StreamMediaType = 'video' | 'story' | 'image' | 'carousel';
@@ -90,7 +93,8 @@ const TIKTOK_PRESET_ACCOUNTS = [
 export const RealtimeStreamDashboard: React.FC<RealtimeStreamDashboardProps> = ({ 
   onDownloadZip,
   defaultPlatform = 'instagram',
-  onPlatformChange
+  onPlatformChange,
+  onNavigate
 }) => {
   const realtime = useExtensionRealtime();
 
@@ -160,6 +164,107 @@ export const RealtimeStreamDashboard: React.FC<RealtimeStreamDashboardProps> = (
   // Media MP4 Stream Validation Status State
   const [validatingMediaStatus, setValidatingMediaStatus] = useState<string | null>(null);
   const [validatingItemId, setValidatingItemId] = useState<string | null>(null);
+
+  // Send-to-Auto-Post Stage State
+  const [stageSendingId, setStageSendingId] = useState<string | null>(null);
+  const [stageSendMsg, setStageSendMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [stageSentIds, setStageSentIds] = useState<Set<string>>(new Set());
+
+  const detectItemPlatform = (item: typeof realtime.mediaItems[0]): 'instagram' | 'tiktok' | 'facebook' => {
+    const src = (item.sourceUrl || item.mediaUrl || '').toLowerCase();
+    const id = (item.id || '').toLowerCase();
+    if (id.startsWith('tt_') || src.includes('tiktok.com')) return 'tiktok';
+    if (id.startsWith('fb_') || src.includes('facebook.com')) return 'facebook';
+    return 'instagram';
+  };
+
+  const handleSendToAutoPost = async (item: typeof realtime.mediaItems[0]) => {
+    setStageSendingId(item.id);
+    setStageSendMsg(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/stage/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          force: true,
+          items: [
+            {
+              shortcode: item.shortcode || item.id,
+              platform: detectItemPlatform(item),
+              mediaUrl: item.videoUrl || item.mediaUrl || item.sourceUrl || '',
+              sourceUrl: item.sourceUrl || item.mediaUrl || '',
+              type: item.type === 'image' ? 'image' : 'video',
+              thumbnail: item.thumbnailUrl || item.mediaUrl || '',
+              caption: item.caption || '',
+              timestamp: Date.now(),
+            },
+          ],
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setStageSentIds((prev) => new Set(prev).add(item.id));
+        if (data.added > 0) {
+          setStageSendMsg({ text: `Sent ${item.shortcode || 'post'} to Content Stage — caption + schedule from there.`, ok: true });
+        } else if (data.skipped?.length) {
+          setStageSendMsg({ text: `Could not send ${item.shortcode || 'post'}: ${data.skipped[0].reason}.`, ok: false });
+        } else {
+          setStageSendMsg({ text: `${item.shortcode || 'post'} is already in the Content Stage.`, ok: true });
+        }
+      } else {
+        setStageSendMsg({ text: data.error || 'Failed to send to stage', ok: false });
+      }
+    } catch (err) {
+      setStageSendMsg({ text: `Server error: ${(err as Error).message} — is the server running on port 3010?`, ok: false });
+    } finally {
+      setStageSendingId(null);
+    }
+  };
+
+  const handleSendSelectedToStage = async () => {
+    if (!selectedItems.length) return;
+    setStageSendingId('__bulk__');
+    setStageSendMsg(null);
+    try {
+      const items = selectedItems.map((item) => ({
+        shortcode: item.shortcode || item.id,
+        platform: detectItemPlatform(item),
+        mediaUrl: item.videoUrl || item.mediaUrl || item.sourceUrl || '',
+        sourceUrl: item.sourceUrl || item.mediaUrl || '',
+        type: item.type === 'image' ? 'image' : 'video',
+        thumbnail: item.thumbnailUrl || item.mediaUrl || '',
+        caption: item.caption || '',
+        timestamp: Date.now(),
+      }));
+      const res = await fetch(`${API_BASE}/api/stage/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items, force: true }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setStageSentIds((prev) => {
+          const next = new Set(prev);
+          selectedItems.forEach((item) => next.add(item.id));
+          return next;
+        });
+        const skipped = Array.isArray(data.skipped) ? data.skipped.length : 0;
+        const sentCount = selectedItems.length - skipped;
+        if (skipped > 0) {
+          setStageSendMsg({ text: `Sent ${sentCount} to Content Stage, ${skipped} skipped (${data.skipped[0].reason}).`, ok: sentCount > 0 });
+        } else {
+          setStageSendMsg({ text: `Sent ${selectedItems.length} posts to Content Stage (${data.added} new) — set the platform and schedule from there.`, ok: true });
+        }
+        setSelectedIds(new Set());
+      } else {
+        setStageSendMsg({ text: data.error || 'Failed to send to stage', ok: false });
+      }
+    } catch (err) {
+      setStageSendMsg({ text: `Server error: ${(err as Error).message} — is the server running on port 3010?`, ok: false });
+    } finally {
+      setStageSendingId(null);
+    }
+  };
 
   const handlePlatformSwitch = (platform: 'instagram' | 'tiktok' | 'facebook') => {
     setActivePlatform(platform);
@@ -419,6 +524,8 @@ HOW TO EXTRACT:
       }
 
       // Fetch and pack media binary files
+      let skippedCount = 0;
+      let creditNotice: string | null = null;
       if (exportIncludeMedia) {
         for (let i = 0; i < itemsToZip.length; i++) {
           const item = itemsToZip[i];
@@ -453,6 +560,10 @@ HOW TO EXTRACT:
               sub?.file(`caption.txt`, `Caption for post ${item.shortcode}:\n\n${item.caption || ''}\n\nMedia URL: ${item.mediaUrl}`);
             }
           } catch (err) {
+            skippedCount++;
+            if (err instanceof Error && err.message.includes('Insufficient credits')) {
+              creditNotice = err.message;
+            }
             console.warn(`Error processing ZIP media for ${item.shortcode}:`, err);
           }
         }
@@ -472,7 +583,16 @@ HOW TO EXTRACT:
       a.download = `Instagram_Bulk_Export_${realtime.profileUsername || 'instagram'}_${itemsToZip.length}_items.zip`;
       a.click();
       URL.revokeObjectURL(url);
-      setZipProgressStatus(`Successfully downloaded ${itemsToZip.length} items as ZIP!`);
+      if (skippedCount > 0) {
+        const downloadedCount = itemsToZip.length - skippedCount;
+        setZipProgressStatus(
+          creditNotice
+            ? `Downloaded ${downloadedCount} item(s) as ZIP. ${creditNotice}`
+            : `Downloaded ${downloadedCount}/${itemsToZip.length} item(s) as ZIP — ${skippedCount} skipped (see console).`
+        );
+      } else {
+        setZipProgressStatus(`Successfully downloaded ${itemsToZip.length} items as ZIP!`);
+      }
       setTimeout(() => {
         setZipProgressStatus('');
         setZipProgressPercent(0);
@@ -510,14 +630,13 @@ HOW TO EXTRACT:
         setValidatingItemId(null);
       }, 3500);
     } catch (err) {
-      console.warn('Direct media download failed, trying proxy download endpoint:', err);
-      setValidatingMediaStatus(`Direct download notice: redirecting to stream endpoint...`);
-      const proxyUrl = `/api/proxy-media?url=${encodeURIComponent(item.mediaUrl || '')}&shortcode=${encodeURIComponent(item.shortcode || '')}&type=${encodeURIComponent(item.type || 'video')}`;
-      window.open(proxyUrl, '_blank');
+      console.warn('Direct media download failed:', err);
+      const isCreditErr = err instanceof Error && err.message.includes('Insufficient credits');
+      setValidatingMediaStatus(isCreditErr ? err.message : `Download failed — media could not be resolved. ${err instanceof Error ? err.message : ''}`);
       setTimeout(() => {
         setValidatingMediaStatus(null);
         setValidatingItemId(null);
-      }, 3500);
+      }, 5000);
     }
   };
 
@@ -575,6 +694,36 @@ HOW TO EXTRACT:
             >
               <HelpCircle className="w-5 h-5 text-[#FF6321]" />
             </button>
+          </div>
+        </div>
+
+        {/* Workflow Stepper — shows where this tab fits */}
+        <div className="pt-3 pb-1">
+          <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-mono font-bold uppercase tracking-[0.15em] text-white/50">
+            <span className="flex items-center gap-1 px-2 py-1 bg-[#FF6321]/25 border border-[#FF6321]/50 text-[#FF6321]">
+              <span className="w-3.5 h-3.5 border border-[#FF6321]/60 rounded-full flex items-center justify-center text-[8px]">1</span>
+              Scrape
+            </span>
+            <span className="text-white/30">→</span>
+            <button
+              onClick={() => onNavigate?.('stage')}
+              className={`flex items-center gap-1 px-2 py-1 border transition-all cursor-pointer ${
+                onNavigate
+                  ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/40'
+                  : 'bg-white/5 border-white/10 text-white/40'
+              }`}
+            >
+              <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] border ${onNavigate ? 'border-emerald-400/60' : 'border-white/20'}`}>2</span>
+              Curate (Stage)
+            </button>
+            <span className="text-white/30">→</span>
+            <span className="flex items-center gap-1 px-2 py-1 bg-white/5 border border-white/10 text-white/40">
+              <span className="w-3.5 h-3.5 border border-white/20 rounded-full flex items-center justify-center text-[8px]">3</span>
+              Schedule &amp; Auto-Post
+            </span>
+            <span className="ml-auto text-white/30 normal-case font-sans tracking-normal hidden sm:inline">
+              Use the <span className="text-emerald-300 font-bold">Stage</span> button on cards to send posts to Step 2
+            </span>
           </div>
         </div>
 
@@ -864,6 +1013,23 @@ HOW TO EXTRACT:
               <p className="text-[10px] text-cyan-300/70 font-sans font-normal">
                 Checking stream length, video headers, and ensuring genuine .mp4 binary payload before initiating download.
               </p>
+            </div>
+          )}
+
+          {stageSendMsg && !zipProgressStatus && (
+            <div className={`p-3 border text-xs font-mono font-bold shadow-lg ${stageSendMsg.ok ? 'bg-emerald-950/80 border-emerald-400/60 text-emerald-200' : 'bg-red-950/80 border-red-400/60 text-red-200'}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <CheckCircle className={`w-4 h-4 ${stageSendMsg.ok ? 'text-emerald-400' : 'text-red-400'}`} />
+                <span>{stageSendMsg.text}</span>
+                {stageSendMsg.ok && onNavigate && (
+                  <button
+                    onClick={() => onNavigate('stage')}
+                    className="ml-auto px-3 py-1.5 bg-emerald-500 text-emerald-950 text-[10px] uppercase tracking-wider font-bold hover:bg-emerald-400 transition-colors cursor-pointer"
+                  >
+                    Open Content Stage →
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -1634,6 +1800,25 @@ HOW TO EXTRACT:
                 <span>Delete {isSomeSelected ? `(${selectedIds.size})` : ''}</span>
               </button>
 
+              {/* Send Selected to Content Stage */}
+              <button
+                onClick={handleSendSelectedToStage}
+                disabled={!isSomeSelected}
+                className={`flex items-center gap-1.5 px-3.5 py-2 text-[10px] font-sans uppercase tracking-[0.15em] font-bold border transition-all cursor-pointer ${
+                  isSomeSelected
+                    ? 'bg-[#19A76C] hover:bg-[#148a58] text-white border-[#19A76C] shadow-sm'
+                    : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                }`}
+                title="Send selected posts to Content Stage (Step 2) for caption, order & scheduling"
+              >
+                {stageSendingId === '__bulk__' ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+                <span>{stageSendingId === '__bulk__' ? 'Staging...' : `Stage ${isSomeSelected ? `(${selectedIds.size})` : ''}`}</span>
+              </button>
+
               {/* CRM Deduplication & Duplicate Finder Button */}
               <button
                 onClick={handleScanDuplicates}
@@ -1911,6 +2096,26 @@ HOW TO EXTRACT:
                       </div>
 
                       <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleSendToAutoPost(item)}
+                          disabled={stageSendingId === item.id}
+                          className={`p-1.5 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1 text-[9px] font-sans font-bold uppercase tracking-wider border ${
+                            stageSentIds.has(item.id)
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : 'bg-[#19A76C]/10 hover:bg-[#19A76C]/25 text-[#0f7a4d] border-[#19A76C]/40'
+                          }`}
+                          title="Send to Content Stage (Step 2) — select, caption, order and schedule from there"
+                        >
+                          {stageSendingId === item.id ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : stageSentIds.has(item.id) ? (
+                            <Check className="w-3 h-3 stroke-[3]" />
+                          ) : (
+                            <Send className="w-3 h-3" />
+                          )}
+                          <span className="hidden sm:inline">{stageSentIds.has(item.id) ? 'Staged' : 'Stage'}</span>
+                        </button>
+
                         <button
                           onClick={() => setPreviewItem(item)}
                           className="p-1 hover:bg-[#FF6321]/10 text-[#FF6321] transition-colors"
@@ -2402,7 +2607,7 @@ HOW TO EXTRACT:
             </div>
 
             <p className="text-sm text-white/80 leading-relaxed font-sans">
-              Download complete ho gaya hai. Kya aap <strong className="text-[#FF6321]">{clearFeedPrompt.platform.toUpperCase()}</strong> ki active feed data ko dashboard app se <strong>clear / delete</strong> karna chahte hain?
+              Download complete. Would you like to <strong className="text-[#FF6321]">clear / delete</strong> the active {clearFeedPrompt.platform.toUpperCase()} feed data from the dashboard?
             </p>
 
             <div className="flex items-center justify-end space-x-3 pt-4 border-t border-white/10">
@@ -2410,7 +2615,7 @@ HOW TO EXTRACT:
                 onClick={() => setClearFeedPrompt({ isOpen: false, platform: 'instagram', itemCount: 0 })}
                 className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-white/70 hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
               >
-                Nahi, Keep Feed Data
+                No, Keep Feed Data
               </button>
               <button
                 onClick={() => {

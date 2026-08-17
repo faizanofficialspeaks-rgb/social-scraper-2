@@ -9,7 +9,7 @@ export const EXTENSION_FILES: ExtensionFile[] = [
     content: `{
   "manifest_version": 3,
   "name": "Social Media Content Scraper & Media Downloader",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Scrape and download Instagram & TikTok posts, reels, stories, carousel media, metadata, and export ZIP archives.",
   "permissions": [
     "storage",
@@ -553,3 +553,4 @@ document.getElementById('saveBtn').addEventListener('click', () => {
 }`
   }
 ];
+

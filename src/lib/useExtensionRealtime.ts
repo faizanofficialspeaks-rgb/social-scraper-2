@@ -352,7 +352,7 @@ export function useExtensionRealtime(): ExtensionRealtimeState {
   }, []);
 
   // Post message to extension over BroadcastChannel + postMessage
-  const sendMessageToExtension = useCallback((type: string, data: any = {}) => {
+  const sendMessageToExtension = useCallback((type: string, data: Record<string, unknown> = {}) => {
     const payload = {
       source: 'IG_SCRAPER_APP',
       type,
@@ -409,7 +409,45 @@ export function useExtensionRealtime(): ExtensionRealtimeState {
     };
   }, [sendMessageToExtension]);
 
-  const handleExtensionMessage = useCallback((msg: any) => {
+  interface ExtensionMessage {
+  type: string;
+  isLoggedIn?: boolean;
+  profileUsername?: string;
+  isScraping?: boolean;
+  progressMessage?: string;
+  mediaItems?: ExtensionMediaItem[];
+  latestItem?: ExtensionMediaItem;
+  stats?: Record<string, number>;
+  browser?: 'Chrome' | 'Edge' | 'Brave' | 'Firefox';
+  profileName?: string;
+  activeTabUrl?: string;
+  [key: string]: unknown;
+}
+
+interface ExtensionMediaItem {
+  id?: string;
+  shortcode?: string;
+  code?: string;
+  type?: string;
+  caption?: string;
+  mediaUrl?: string;
+  sourceUrl?: string;
+  videoUrl?: string;
+  thumbnailUrl?: string;
+  displayUrl?: string;
+  username?: string;
+  author?: string;
+  platform?: string;
+  publishedAt?: string;
+  publishedFormatted?: string;
+  likeCount?: number;
+  commentCount?: number;
+  viewCount?: number;
+  videoCandidates?: string[];
+  [key: string]: unknown;
+}
+
+  const handleExtensionMessage = useCallback((msg: ExtensionMessage) => {
     setIsConnected(true);
     setLastPingTimestamp(Date.now());
 
@@ -459,7 +497,7 @@ export function useExtensionRealtime(): ExtensionRealtimeState {
     }
 
     if (msg.mediaItems && Array.isArray(msg.mediaItems)) {
-      const tagged = msg.mediaItems.map((item: any) => ({
+      const tagged = msg.mediaItems.map((item: ExtensionMediaItem) => ({
         ...item,
         platform: item.platform || (
           (item.id?.startsWith('tt_') || item.sourceUrl?.includes('tiktok.com')) ? 'tiktok' :
@@ -470,7 +508,7 @@ export function useExtensionRealtime(): ExtensionRealtimeState {
       setMediaItems(tagged);
       addLog(`Synced ${msg.mediaItems.length} media items from extension.`, 'success');
     } else if (msg.latestItem) {
-      const taggedItem = {
+      const taggedItem: ExtensionMediaItem = {
         ...msg.latestItem,
         platform: msg.latestItem.platform || (
           (msg.latestItem.id?.startsWith('tt_') || msg.latestItem.sourceUrl?.includes('tiktok.com')) ? 'tiktok' :

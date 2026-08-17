@@ -1,22 +1,23 @@
 import React from 'react';
-import { Download, Sparkles, Terminal, Play, FileCode, Radio, Settings, CalendarClock } from 'lucide-react';
+import { Download, Settings, Zap, LogOut } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 interface HeaderProps {
-  activeTab: 'instagram' | 'tiktok' | 'facebook' | 'setup' | 'publisher';
-  setActiveTab: (tab: 'instagram' | 'tiktok' | 'facebook' | 'setup' | 'publisher') => void;
   onDownloadZip: () => void;
   isZipping: boolean;
   onOpenConfig?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onDownloadZip, isZipping, onOpenConfig }) => {
+export const Header: React.FC<HeaderProps> = ({ onDownloadZip, isZipping, onOpenConfig }) => {
+  const { user, credits, signOut } = useAuth();
+
   return (
     <header className="bg-[#FBF9F6] border-b border-[#1A1A1A]/10 text-[#1A1A1A] sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-20">
           
           {/* Logo & Brand */}
-          <div className="flex items-center gap-4 cursor-pointer" onClick={() => setActiveTab('instagram')}>
+          <div className="flex items-center gap-4">
             <div className="w-10 h-10 border border-[#1A1A1A] bg-[#1A1A1A] text-[#F5F2ED] font-serif italic text-xl flex items-center justify-center font-bold">
               IG
             </div>
@@ -30,81 +31,35 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onDownl
                 </span>
               </div>
               <p className="text-[10px] font-sans font-medium uppercase tracking-[0.15em] text-[#1A1A1A]/50 mt-1">
-                Multi-Platform Real-Time Scraper
+                Multi-Platform Real-Time Scraper & Auto-Poster
               </p>
             </div>
           </div>
 
-          {/* Navigation Tabs */}
-          <nav className="hidden md:flex items-center gap-2 border-b border-[#1A1A1A]/10 pb-1">
-            {/* Instagram Tab */}
-            <button
-              onClick={() => setActiveTab('instagram')}
-              className={`px-3 py-1.5 text-[11px] uppercase tracking-[0.15em] font-sans font-bold transition-all flex items-center gap-1.5 border ${
-                activeTab === 'instagram'
-                  ? 'bg-[#FF6321] text-white border-[#FF6321] shadow-sm'
-                  : 'bg-transparent text-[#1A1A1A]/60 border-transparent hover:text-[#1A1A1A]'
-              }`}
-            >
-              <Radio className={`w-3.5 h-3.5 ${activeTab === 'instagram' ? 'text-white animate-pulse' : 'text-[#FF6321]'}`} />
-              Instagram 📸
-            </button>
-
-            {/* TikTok Tab */}
-            <button
-              onClick={() => setActiveTab('tiktok')}
-              className={`px-3 py-1.5 text-[11px] uppercase tracking-[0.15em] font-sans font-bold transition-all flex items-center gap-1.5 border ${
-                activeTab === 'tiktok'
-                  ? 'bg-[#FF0050] text-white border-[#FF0050] shadow-sm'
-                  : 'bg-transparent text-[#1A1A1A]/60 border-transparent hover:text-[#1A1A1A]'
-              }`}
-            >
-              <Radio className={`w-3.5 h-3.5 ${activeTab === 'tiktok' ? 'text-white animate-pulse' : 'text-[#FF0050]'}`} />
-              TikTok 🎵
-            </button>
-
-            {/* Facebook Tab */}
-            <button
-              onClick={() => setActiveTab('facebook')}
-              className={`px-3 py-1.5 text-[11px] uppercase tracking-[0.15em] font-sans font-bold transition-all flex items-center gap-1.5 border ${
-                activeTab === 'facebook'
-                  ? 'bg-[#1877F2] text-white border-[#1877F2] shadow-sm'
-                  : 'bg-transparent text-[#1A1A1A]/60 border-transparent hover:text-[#1A1A1A]'
-              }`}
-            >
-              <Radio className={`w-3.5 h-3.5 ${activeTab === 'facebook' ? 'text-white animate-pulse' : 'text-[#1877F2]'}`} />
-              Facebook 📘
-            </button>
-
-            {/* Publisher Tab */}
-            <button
-              onClick={() => setActiveTab('publisher')}
-              className={`px-3 py-1.5 text-[11px] uppercase tracking-[0.15em] font-sans font-bold transition-all flex items-center gap-1.5 border ${
-                activeTab === 'publisher'
-                  ? 'bg-[#1A1A1A] text-white border-[#1A1A1A] shadow-sm'
-                  : 'bg-transparent text-[#1A1A1A]/60 border-transparent hover:text-[#1A1A1A]'
-              }`}
-            >
-              <CalendarClock className={`w-3.5 h-3.5 ${activeTab === 'publisher' ? 'text-white' : 'text-[#FF6321]'}`} />
-              Publisher
-            </button>
-
-            {/* Extension Setup Tab */}
-            <button
-              onClick={() => setActiveTab('setup')}
-              className={`px-3 py-1.5 text-[11px] uppercase tracking-[0.15em] font-sans font-bold transition-all flex items-center gap-1.5 border ${
-                activeTab === 'setup'
-                  ? 'bg-[#1A1A1A] text-white border-[#1A1A1A] shadow-sm'
-                  : 'bg-transparent text-[#1A1A1A]/60 border-transparent hover:text-[#1A1A1A]'
-              }`}
-            >
-              <Terminal className="w-3.5 h-3.5 text-amber-500" />
-              Extension Setup
-            </button>
-          </nav>
-
           {/* Action Buttons */}
           <div className="flex items-center gap-3">
+            {user && credits !== null && (
+              <div
+                className="flex items-center gap-2 px-3.5 py-2 bg-[#1A1A1A] text-[#ccff00] border border-[#1A1A1A]"
+                title="1 video = 1 credit"
+              >
+                <Zap className="w-4 h-4" />
+                <span className="font-bold text-sm">{credits}</span>
+                <span className="hidden sm:inline text-[9px] uppercase tracking-[0.15em] text-white/60">credits</span>
+              </div>
+            )}
+
+            {user && (
+              <button
+                onClick={() => signOut()}
+                className="hidden md:flex items-center gap-2 px-3 py-2 text-[10px] uppercase tracking-[0.15em] font-bold text-[#1A1A1A]/60 hover:text-[#1A1A1A] border border-[#1A1A1A]/20 hover:border-[#1A1A1A]/50 transition-colors cursor-pointer"
+                title="Sign out"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span className="max-w-28 truncate">{user.email?.split('@')[0]}</span>
+              </button>
+            )}
+
             {onOpenConfig && (
               <button
                 onClick={onOpenConfig}
@@ -131,4 +86,3 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab, onDownl
     </header>
   );
 };
-

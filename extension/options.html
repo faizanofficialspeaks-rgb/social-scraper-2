@@ -153,10 +153,30 @@
   </div>
 
   <div class="notice">
-    <strong>Auto-Publisher Moved to Web App</strong>
-    Scheduling, platform connections, AI captions & calendar are now managed from the
-    <b>Publisher</b> tab inside the SocialScraper web app (http://localhost:5173).
-    This page only controls scraper behavior.
+    <strong>Scraper-First Extension</strong>
+    This page controls scraper & downloader behavior only.
+  </div>
+
+  <!-- Account Access (API Token) -->
+  <div class="card">
+    <p class="eyebrow">Account Access</p>
+    <h2>API Token</h2>
+    <p class="sub">The extension verifies this token before scraping. Get it from Dashboard → Setup &amp; Build → "My Account".</p>
+
+    <div class="form-group">
+      <label>Server URL (API Base)</label>
+      <input type="text" id="apiBase" placeholder="http://localhost:3010">
+      <small class="small-text">URL where the web app is running — default http://localhost:3010</small>
+    </div>
+
+    <div class="form-group">
+      <label>API Token</label>
+      <input type="text" id="apiToken" placeholder="Paste your API token here" autocomplete="off" spellcheck="false">
+      <small class="small-text">Scraping is blocked without a valid token. Copy it from Account → API Token.</small>
+    </div>
+
+    <div id="tokenStatus" class="status"></div>
+    <button class="btn-save" id="validateTokenBtn">Validate &amp; Save Token</button>
   </div>
 
   <!-- Scraper Behavior -->

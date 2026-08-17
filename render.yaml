@@ -1,19 +1,35 @@
 services:
   - type: web
-    name: socialscraper-server
+    name: social-scraper
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    buildCommand: npm install && npm run build && python3 -m pip install -r requirements.txt
     startCommand: npm start
-    healthCheckPath: /api/health
+    healthCheckPath: /api/publish/status
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
-      - key: AI_SERVICE
-        value: gemini
-      - key: GEMINI_MODEL
-        value: gemini-2.5-flash
-      - key: OLLAMA_MODEL
-        value: gpt-oss:120b
-      - key: OLLAMA_BASE_URL
-        value: http://localhost:11434
+      - key: DATA_DIR
+        value: /data
+      - key: PYTHON_BIN
+        value: python3
+      - key: GEMINI_API_KEY
+        sync: false
+      # --- Supabase (fill values in Render dashboard after deploy) ---
+      # Server-side (secrets):
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Build-time (public keys — inlined into the frontend by Vite):
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
+        sync: false
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1

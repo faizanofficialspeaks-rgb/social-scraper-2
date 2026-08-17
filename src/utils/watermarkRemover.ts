@@ -229,55 +229,74 @@ export async function fetchMediaBinary(
       if (options.onStatusUpdate) {
         options.onStatusUpdate(`Validating media... fetching stream payload and verifying MP4 binary structure for ${item.shortcode}`);
       }
-      const proxyApiUrl = `/api/proxy-media?url=${encodeURIComponent(candidate)}&shortcode=${encodeURIComponent(item.shortcode || '')}&type=${encodeURIComponent(item.type || 'video')}&platform=${encodeURIComponent(platform)}`;
-      const proxyResp = await fetch(proxyApiUrl);
+      // Videos go through the authenticated download endpoint (1 credit per video);
+      // images stay on the free preview proxy.
+      if (isVideo) {
+        const { getAccessToken } = await import('../lib/supabase');
+        const token = await getAccessToken();
+        const downloadUrl = `/api/media/download?url=${encodeURIComponent(candidate)}&shortcode=${encodeURIComponent(item.shortcode || '')}&type=${encodeURIComponent(item.type || 'video')}&platform=${encodeURIComponent(platform)}`;
+        const downloadResp = await fetch(downloadUrl, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
 
-      if (proxyResp.ok) {
-        const proxyBlob = await proxyResp.blob();
-        if (isVideo) {
+        if (downloadResp.status === 402) {
+          let msg = 'Insufficient credits. 1 video = 1 credit.';
+          try {
+            const body = await downloadResp.json();
+            if (body.message) msg = body.message;
+          } catch { /* ignore */ }
+          throw new Error(msg);
+        }
+        if (downloadResp.ok) {
+          const downloadBlob = await downloadResp.blob();
           if (options.onStatusUpdate) {
             options.onStatusUpdate(`Validating media... checking video payload size and headers for ${item.shortcode}`);
           }
-          const isValid = await validateVideoBlob(proxyBlob);
-          if (isValid && (proxyBlob.type.includes('mp4') || proxyBlob.type.includes('video') || proxyBlob.type.includes('octet-stream'))) {
+          const isValid = await validateVideoBlob(downloadBlob);
+          if (isValid && (downloadBlob.type.includes('mp4') || downloadBlob.type.includes('video') || downloadBlob.type.includes('octet-stream'))) {
             if (options.onStatusUpdate) {
               options.onStatusUpdate(`Validation successful: Playable MP4 verified! Starting download for ${item.shortcode}`);
             }
             const filename = `${cleanHandle}_${item.shortcode}.mp4`;
-            return { blob: proxyBlob, filename, extension: 'mp4' };
+            return { blob: downloadBlob, filename, extension: 'mp4' };
           }
-        } else if (proxyBlob.size > 2000) {
-          const isMp4Blob = proxyBlob.type.includes('mp4') || proxyBlob.type.includes('video');
-          const ext = isMp4Blob ? 'mp4' : 'jpg';
-          const filename = `${cleanHandle}_${item.shortcode}.${ext}`;
+        } else {
+          console.warn(`[FETCH-MEDIA] Download endpoint HTTP ${downloadResp.status} for ${item.shortcode}`);
+        }
+      } else {
+        const proxyApiUrl = `/api/proxy-media?url=${encodeURIComponent(candidate)}&shortcode=${encodeURIComponent(item.shortcode || '')}&type=${encodeURIComponent(item.type || 'video')}&platform=${encodeURIComponent(platform)}`;
+        const proxyResp = await fetch(proxyApiUrl);
 
-          if (options.enabled && !isMp4Blob) {
-            const objectUrl = URL.createObjectURL(proxyBlob);
-            const cleanedBlob = await processImageWatermarkRemoval(objectUrl, options);
-            URL.revokeObjectURL(objectUrl);
-            return { blob: cleanedBlob, filename, extension: 'jpg' };
+        if (proxyResp.ok) {
+          const proxyBlob = await proxyResp.blob();
+          if (proxyBlob.size > 2000) {
+            const isMp4Blob = proxyBlob.type.includes('mp4') || proxyBlob.type.includes('video');
+            const ext = isMp4Blob ? 'mp4' : 'jpg';
+            const filename = `${cleanHandle}_${item.shortcode}.${ext}`;
+
+            if (options.enabled && !isMp4Blob) {
+              const objectUrl = URL.createObjectURL(proxyBlob);
+              const cleanedBlob = await processImageWatermarkRemoval(objectUrl, options);
+              URL.revokeObjectURL(objectUrl);
+              return { blob: cleanedBlob, filename, extension: 'jpg' };
+            }
+            return { blob: proxyBlob, filename, extension: ext };
           }
-          return { blob: proxyBlob, filename, extension: ext };
         }
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('Insufficient credits')) throw err;
       console.warn(`[FETCH-MEDIA] Proxy media fetch failed for ${item.shortcode} (${candidate}):`, err);
     }
   }
 
-  // 3. Direct browser fetch attempt
+  // 3. Direct browser fetch attempt (images only — videos stay on the credit-gated server download)
   for (const candidate of targets) {
+    if (isVideo) continue;
     try {
       const resp = await fetch(candidate, { mode: 'cors' });
       if (resp.ok) {
         const rawBlob = await resp.blob();
-        if (isVideo) {
-          const isValid = await validateVideoBlob(rawBlob);
-          if (isValid && (rawBlob.type.includes('mp4') || rawBlob.type.includes('video') || rawBlob.type.includes('octet-stream'))) {
-            const filename = `${cleanHandle}_${item.shortcode}.mp4`;
-            return { blob: rawBlob, filename, extension: 'mp4' };
-          }
-        } else if (rawBlob.size > 2000) {
+        if (rawBlob.size > 2000) {
           const isMp4Blob = rawBlob.type.includes('mp4') || rawBlob.type.includes('video');
           const ext = isMp4Blob ? 'mp4' : 'jpg';
           const filename = `${cleanHandle}_${item.shortcode}.${ext}`;

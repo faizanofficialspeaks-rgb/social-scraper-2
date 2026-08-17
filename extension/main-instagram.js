@@ -29,13 +29,14 @@
     return RELEVANT_URL_PATTERNS.some(pattern => url.includes(pattern));
   }
 
-  function notifyContentScript(payload, url) {
+  function notifyContentScript(payload, url, status) {
     try {
       window.dispatchEvent(
         new CustomEvent(EVENT_NAME, {
           detail: {
             url: url,
             timestamp: Date.now(),
+            status: status || 0,
             data: payload
           }
         })
@@ -53,15 +54,18 @@
     try {
       const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) ? args[0].url : '';
       if (isRelevantUrl(url)) {
-        console.log(`${LOG_PREFIX} Relevant fetch response detected: ${url.substring(0, 80)}`);
+        console.log(`${LOG_PREFIX} Relevant fetch response detected: ${url.substring(0, 80)} (${response.status})`);
         // Clone response to read JSON without disrupting Instagram's application code
         const clonedRes = response.clone();
         clonedRes.json().then(data => {
           if (data && typeof data === 'object') {
-            notifyContentScript(data, url);
+            notifyContentScript(data, url, response.status);
           }
         }).catch(() => {
-          // Response was not JSON or cloning failed, ignore safely
+          // Failed to parse JSON. Still relay rate-limit signals so the scraper can back off.
+          if (response.status >= 429) {
+            notifyContentScript({ rateLimited: true }, url, response.status);
+          }
         });
       }
     } catch (err) {
@@ -84,12 +88,15 @@
     this.addEventListener('load', function () {
       try {
         if (this._ig_url && isRelevantUrl(this._ig_url)) {
-          console.log(`${LOG_PREFIX} Relevant XHR response detected: ${String(this._ig_url).substring(0, 80)}`);
+          console.log(`${LOG_PREFIX} Relevant XHR response detected: ${String(this._ig_url).substring(0, 80)} (${this.status})`);
+          if (this.status >= 429) {
+            notifyContentScript({ rateLimited: true }, this._ig_url, this.status);
+          }
           if (this.responseType === '' || this.responseType === 'text') {
             const data = JSON.parse(this.responseText);
-            notifyContentScript(data, this._ig_url);
+            notifyContentScript(data, this._ig_url, this.status);
           } else if (this.responseType === 'json' && this.response) {
-            notifyContentScript(this.response, this._ig_url);
+            notifyContentScript(this.response, this._ig_url, this.status);
           }
         }
       } catch (err) {
