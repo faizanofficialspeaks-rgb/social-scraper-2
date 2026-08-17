@@ -1508,45 +1508,169 @@ app.post("/api/publish/disconnect", async (req, res) => {
   }
 });
 
+// ==========================================
+// SMART SCHEDULING
+// ==========================================
+const SCHEDULING_CONFIG_FILE = path.join(process.cwd(), ".scheduling-config.json");
+
+interface SchedulingConfig {
+  maxPostsPerDay: number;
+  maxReelsPerDay: number;
+  windowStart: string;
+  windowEnd: string;
+  intervalMinutes: number;
+  jitterMinutes: number;
+  sameAsYesterdayOffsetMinutes: number;
+}
+
+const DEFAULT_SCHEDULING_CONFIG: SchedulingConfig = {
+  maxPostsPerDay: 10,
+  maxReelsPerDay: 5,
+  windowStart: "09:00",
+  windowEnd: "21:00",
+  intervalMinutes: 30,
+  jitterMinutes: 5,
+  sameAsYesterdayOffsetMinutes: 10,
+};
+
+function loadSchedulingConfig(): SchedulingConfig {
+  try {
+    if (!fs.existsSync(SCHEDULING_CONFIG_FILE)) return { ...DEFAULT_SCHEDULING_CONFIG };
+    const raw = JSON.parse(fs.readFileSync(SCHEDULING_CONFIG_FILE, "utf8"));
+    return { ...DEFAULT_SCHEDULING_CONFIG, ...raw };
+  } catch (e) {
+    console.warn("[SCHEDULE] Could not load config:", e);
+    return { ...DEFAULT_SCHEDULING_CONFIG };
+  }
+}
+
+function saveSchedulingConfig(cfg: SchedulingConfig) {
+  fs.writeFileSync(SCHEDULING_CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf8");
+}
+
+function minutesOf(hm: string): number {
+  const [h, m] = hm.split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+function generateAutoSlots(count: number, cfg: SchedulingConfig, now: Date = new Date()): number[] {
+  const start = minutesOf(cfg.windowStart);
+  const end = minutesOf(cfg.windowEnd);
+  const capacity = Math.max(1, Math.floor((end - start) / Math.max(10, cfg.intervalMinutes)));
+  const n = Math.min(Math.max(1, count), capacity);
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const slots: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const slotMin = start + i * cfg.intervalMinutes;
+    let t = base.getTime() + slotMin * 60 * 1000;
+    if (t <= now.getTime()) t = now.getTime() + 60 * 1000;
+    const jitter = cfg.jitterMinutes > 0 ? Math.round((Math.random() * 2 - 1) * cfg.jitterMinutes * 60 * 1000) : 0;
+    slots.push(t + jitter);
+  }
+  return slots;
+}
+
 app.post("/api/publish/queue", (req, res) => {
   try {
-    const { shortcode, mediaUrl, caption, scheduledAt, type, reel, platform } = req.body || {};
+    const { shortcode, mediaUrl, caption, scheduledAt, type, reel, platform, destination, schedulingMode } = req.body || {};
     if (!mediaUrl || !shortcode) {
       return res.status(400).json({ error: "mediaUrl and shortcode are required" });
     }
-    if (!['video', 'image'].includes(type || 'video')) {
+    if (!["video", "image"].includes(type || "video")) {
       return res.status(400).json({ error: "type must be video or image" });
     }
-    const targetPlatform = platform === 'facebook' ? 'facebook' : 'instagram';
-    if (targetPlatform === 'facebook' && !loadFacebookPosterSession()) {
-      return res.status(400).json({ error: "No Facebook page connected — connect first in the Auto-Post panel" });
+    const targetPlatform = platform === "facebook" ? "facebook" : "instagram";
+    if (targetPlatform === "facebook" && !loadFacebookPosterSession()) {
+      return res.status(400).json({ error: "No Facebook page connected — connect first in the Queue panel" });
     }
-    
+
     // Idempotency: prevent duplicate queue entries for same content
     const idempotencyKey = generateIdempotencyKey(shortcode, mediaUrl, targetPlatform);
     const existing = findByIdempotencyKey(idempotencyKey);
     if (existing) {
-      return res.json({ 
-        success: true, 
-        itemId: existing.id, 
-        message: "Post already queued (duplicate detected)", 
-        duplicate: true 
+      return res.json({
+        success: true,
+        itemId: existing.id,
+        message: "Post already queued (duplicate detected)",
+        duplicate: true,
+        existingShortcode: existing.shortcode,
+        existingPlatform: existing.platform,
+        existingScheduledAt: existing.scheduledAt,
+        existingStatus: existing.status,
       });
     }
-    
+
     const id = `post_${shortcode}_${Date.now()}`;
+
+    // Daily caps: excess items roll to tomorrow at window start
+    const cfg = loadSchedulingConfig();
+    if (schedulingMode !== "manual") {
+      const igItems = Array.from(publishQueue.values()).filter(
+        (i) => i.platform === "instagram" && ["queued", "downloading", "publishing"].includes(i.status),
+      );
+      const fbItems = Array.from(publishQueue.values()).filter(
+        (i) => i.platform === "facebook" && ["queued", "downloading", "publishing"].includes(i.status),
+      );
+      const targetItems = targetPlatform === "facebook" ? fbItems : igItems;
+      const countToday = targetItems.filter(
+        (i) => new Date(i.scheduledAt).toDateString() === new Date().toDateString(),
+      ).length;
+      let limitHit = countToday >= cfg.maxPostsPerDay;
+      if (targetPlatform === "instagram" && !limitHit && reel !== false) {
+        const reelsToday = targetItems.filter(
+          (i) => i.reel && new Date(i.scheduledAt).toDateString() === new Date().toDateString(),
+        ).length;
+        limitHit = reelsToday >= cfg.maxReelsPerDay;
+      }
+      if (limitHit) {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const [hh, mm] = cfg.windowStart.split(":").map(Number);
+        tomorrow.setHours(hh, mm, 0, 0);
+        publishQueue.set(id, {
+          id,
+          shortcode,
+          mediaUrl,
+          caption,
+          type: type || "video",
+          reel: reel !== false,
+          platform: targetPlatform,
+          scheduledAt: tomorrow.getTime(),
+          status: "queued",
+          attempts: 0,
+          idempotencyKey,
+          destination,
+          schedulingMode: schedulingMode || "auto",
+        });
+        savePublishQueue();
+        return res.json({
+          success: true,
+          itemId: id,
+          message: `Daily limit reached — scheduled for tomorrow ${cfg.windowStart}`,
+          deferredToTomorrow: true,
+        });
+      }
+    }
+
     publishQueue.set(id, {
       id,
       shortcode,
       mediaUrl,
       caption,
-      type: type || 'video',
+      type: type || "video",
       reel: reel !== false,
       platform: targetPlatform,
-      scheduledAt: scheduledAt ? Number(scheduledAt) : Date.now() + 60 * 1000,
-      status: 'queued',
+      scheduledAt:
+        schedulingMode === "manual" || scheduledAt
+          ? scheduledAt
+            ? Number(scheduledAt)
+            : Date.now() + 60 * 1000
+          : generateAutoSlots(1, cfg)[0],
+      status: "queued",
       attempts: 0,
-      idempotencyKey
+      idempotencyKey,
+      destination,
+      schedulingMode: schedulingMode || "auto",
     });
     savePublishQueue();
     console.log(`[IG-POSTER] Queued ${shortcode} (${targetPlatform}) at ${new Date(publishQueue.get(id)!.scheduledAt).toLocaleString()}`);
@@ -1583,6 +1707,100 @@ app.post("/api/publish/set-platform", (req, res) => {
   }
 });
 
+app.get("/api/publish/scheduling-config", (req, res) => {
+  res.json({ success: true, config: loadSchedulingConfig() });
+});
+
+app.put("/api/publish/scheduling-config", (req, res) => {
+  try {
+    const { config } = req.body || {};
+    if (!config || typeof config !== "object") return res.status(400).json({ error: "config object required" });
+    const merged: SchedulingConfig = { ...DEFAULT_SCHEDULING_CONFIG, ...config };
+    merged.maxPostsPerDay = Math.max(1, Math.min(100, Number(merged.maxPostsPerDay) || 10));
+    merged.maxReelsPerDay = Math.max(0, Math.min(100, Number(merged.maxReelsPerDay) || 5));
+    merged.intervalMinutes = Math.max(10, Math.min(1440, Number(merged.intervalMinutes) || 30));
+    merged.jitterMinutes = Math.max(0, Math.min(60, Number(merged.jitterMinutes) || 5));
+    merged.sameAsYesterdayOffsetMinutes = Math.max(0, Math.min(120, Number(merged.sameAsYesterdayOffsetMinutes) || 10));
+    saveSchedulingConfig(merged);
+    res.json({ success: true, config: merged });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/publish/schedule-like-yesterday", (req, res) => {
+  try {
+    const { offsetMinutes } = req.body || {};
+    const cfg = loadSchedulingConfig();
+    const offset = offsetMinutes === undefined ? cfg.sameAsYesterdayOffsetMinutes : Number(offsetMinutes) || 0;
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yKey = yesterday.toDateString();
+    const yesterdayItems = Array.from(publishQueue.values()).filter(
+      (i) => i.status === "posted" && i.postedAt && new Date(i.postedAt).toDateString() === yKey,
+    );
+    const times = yesterdayItems
+      .map((i) => {
+        const d = new Date(i.postedAt!);
+        return d.getHours() * 60 + d.getMinutes();
+      })
+      .sort((a, b) => a - b);
+    const pending = Array.from(publishQueue.values()).filter((i) => i.status === "queued");
+    const targets = pending.slice(0, cfg.maxPostsPerDay);
+    const assigned: Array<{ id: string; scheduledAt: number }> = [];
+    const base = new Date();
+    base.setHours(0, 0, 0, 0);
+    const useTimes = times.length ? times : [minutesOf(cfg.windowStart) + offset];
+    targets.forEach((item, i) => {
+      const t = base.getTime() + (useTimes[i % useTimes.length] + offset) * 60 * 1000;
+      if (t <= Date.now()) return;
+      item.scheduledAt = t;
+      item.schedulingMode = "auto";
+      assigned.push({ id: item.id, scheduledAt: t });
+    });
+    savePublishQueue();
+    res.json({
+      success: true,
+      assigned,
+      message: times.length
+        ? `Copied yesterday's ${times.length} posting times (+${offset} min offset) to today's queue`
+        : `No posts yesterday — scheduled from ${cfg.windowStart} +${offset} min`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/publish/set-mode", (req, res) => {
+  try {
+    const { itemId, mode } = req.body || {};
+    const item = publishQueue.get(itemId);
+    if (!item) return res.status(404).json({ error: "Queue item not found" });
+    if (item.status !== "queued") return res.status(400).json({ error: "Only queued items can change mode" });
+    item.schedulingMode = mode === "manual" ? "manual" : "auto";
+    savePublishQueue();
+    res.json({ success: true, message: `Mode set to ${item.schedulingMode}` });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/publish/set-time", (req, res) => {
+  try {
+    const { itemId, scheduledAt } = req.body || {};
+    const item = publishQueue.get(itemId);
+    if (!item) return res.status(404).json({ error: "Queue item not found" });
+    const t = Number(scheduledAt);
+    if (!t || Number.isNaN(t)) return res.status(400).json({ error: "scheduledAt (ms) required" });
+    item.scheduledAt = t;
+    item.schedulingMode = "manual";
+    savePublishQueue();
+    res.json({ success: true, scheduledAt: t, message: `Rescheduled to ${new Date(t).toLocaleString()}` });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 app.get("/api/publish/status", async (req, res) => {
   const username = loadInstagramPosterSession();
   const fb = loadFacebookPosterSession();
@@ -1601,6 +1819,7 @@ app.get("/api/publish/status", async (req, res) => {
     igGraphApiUsername: fb?.igUsername || "",
     igGraphApiUserId: fb?.igUserId || "",
     queue: items,
+    schedulingConfig: loadSchedulingConfig(),
     stats: {
       posted: items.filter(i => i.status === 'posted').length,
       failed: items.filter(i => i.status === 'failed').length,
