@@ -9,6 +9,10 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'fb-poster', now: new Date().toISOString() });
 });
 
+app.get('/api/config', (req, res) => {
+  res.json({ url: process.env.SUPABASE_URL, anon: process.env.SUPABASE_ANON_KEY });
+});
+
 const { admin, requireUser } = require('./db.cjs');
 const { resolvePageToken } = require('./fb.cjs');
 

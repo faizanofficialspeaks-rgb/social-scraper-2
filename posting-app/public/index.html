@@ -1,5 +1,50 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>FB Poster</title></head>
-<body><h1>FB Poster — coming up</h1></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Easy FB Poster</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Easy FB Poster</h1>
+    <div id="authBox"></div>
+  </header>
+
+  <main id="app" class="hidden">
+    <section class="card" id="fbCard">
+      <h2>1 · Facebook Connect</h2>
+      <p class="sub">Paste your Facebook Page Token (or user token — auto-converts).</p>
+      <input type="password" id="fbToken" placeholder="EAAG... (Facebook token)" autocomplete="off">
+      <button id="fbConnect" class="primary">Connect Facebook</button>
+      <div id="fbStatus" class="chip"></div>
+    </section>
+
+    <section class="card" id="uploadCard">
+      <h2>2 · Videos Upload</h2>
+      <p class="sub">Extracted ZIP folder drop karo — captions metadata.json se auto aa jayengi.</p>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" webkitdirectory multiple hidden>
+        <span>📁 Folder drop karo ya click karo</span>
+      </label>
+      <div id="uploadMsg" class="chip"></div>
+    </section>
+
+    <section class="card" id="queueCard">
+      <div class="row-between">
+        <h2>3 · Queue <span id="queueCount" class="chip"></span></h2>
+        <button id="postAll" class="primary">Sab Post Karo</button>
+      </div>
+      <div id="queueList"></div>
+    </section>
+  </main>
+
+  <main id="loginPrompt" class="card hidden">
+    <p class="sub">App use karne ke liye login karo.</p>
+    <button id="loginBtn" class="primary">Google se Login</button>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
 </html>
