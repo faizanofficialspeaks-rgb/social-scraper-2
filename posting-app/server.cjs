@@ -101,6 +101,60 @@ app.post('/api/upload', requireUser, upload.fields([{ name: 'files', maxCount: 2
   res.json({ rows, skipped, duplicates });
 });
 
+app.get('/api/queue', requireUser, async (req, res) => {
+  const { data, error } = await admin
+    .from('post_queue')
+    .select('*')
+    .eq('user_id', req.user.id)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ rows: data || [] });
+});
+
+app.post('/api/queue/:id/now', requireUser, async (req, res) => {
+  const { error } = await admin
+    .from('post_queue')
+    .update({ scheduled_for: new Date().toISOString(), status: 'queued' })
+    .eq('id', req.params.id).eq('user_id', req.user.id)
+    .eq('status', 'queued');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+app.patch('/api/queue/:id/schedule', requireUser, async (req, res) => {
+  const when = new Date(req.body?.scheduled_for);
+  if (isNaN(when.getTime())) return res.status(400).json({ error: 'Invalid scheduled_for' });
+  const { error } = await admin
+    .from('post_queue')
+    .update({ scheduled_for: when.toISOString() })
+    .eq('id', req.params.id).eq('user_id', req.user.id)
+    .eq('status', 'queued');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+app.patch('/api/queue/:id/caption', requireUser, async (req, res) => {
+  const caption = String(req.body?.caption || '').slice(0, 2200);
+  const { error } = await admin
+    .from('post_queue')
+    .update({ caption })
+    .eq('id', req.params.id).eq('user_id', req.user.id)
+    .in('status', ['queued', 'failed']);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+app.delete('/api/queue/:id', requireUser, async (req, res) => {
+  const { error } = await admin
+    .from('post_queue')
+    .delete()
+    .eq('id', req.params.id).eq('user_id', req.user.id)
+    .eq('status', 'queued');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 8000;
