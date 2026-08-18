@@ -36,3 +36,14 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 #uploadMsg, #authBox button { font-size: 13px; }
 #progressWrap { margin-top: 8px; height: 8px; background: #eee; border-radius: 99px; overflow: hidden; }
 #progressBar { height: 100%; width: 0; background: #1877f2; transition: width .2s; }
+#previewGrid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; overflow-x: auto; }
+.day-col { border: 1px solid #eee; border-radius: 10px; padding: 10px; min-width: 100px; display: grid; gap: 6px; align-content: start; }
+.day-head { font-size: 12px; font-weight: 700; display: grid; }
+.day-date { font-size: 11px; color: #999; font-weight: 400; }
+.day-slots { display: flex; flex-wrap: wrap; gap: 4px; }
+.slot-chip { background: #eee; color: #888; }
+.day-posts { display: grid; gap: 4px; }
+.preview-post { display: flex; align-items: center; gap: 4px; }
+.preview-post .chip { margin-top: 0; }
+.pname { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pname.empty { color: #ccc; }

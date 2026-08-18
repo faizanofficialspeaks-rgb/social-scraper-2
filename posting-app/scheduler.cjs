@@ -1,6 +1,7 @@
 const fs = require('fs');
 const { pool } = require('./localdb.cjs');
 const { postWithRetry } = require('./publisher.cjs');
+const { notify } = require('./notify.cjs');
 
 const TEN_MIN = 10 * 60 * 1000;
 
@@ -9,10 +10,12 @@ async function processRow(row) {
   const { rows: prof } = await pool.query('select fb_page_token, fb_page_id from fb_profile where user_id = $1', [row.user_id]);
   if (!prof.length || !prof[0].fb_page_token || !prof[0].fb_page_id) {
     await pool.query(`update queue set status = 'failed', error = 'Facebook not connected' where id = $1`, [row.id]);
+    notify('Easy FB Poster', `Failed: ${row.file_name} - Facebook not connected`);
     return;
   }
   if (!fs.existsSync(row.file_path)) {
     await pool.query(`update queue set status = 'failed', error = 'Video file not found - check folder path' where id = $1`, [row.id]);
+    notify('Easy FB Poster', `Failed: ${row.file_name} - video file not found`);
     return;
   }
   try {
@@ -21,12 +24,14 @@ async function processRow(row) {
       `update queue set status = 'posted', fb_post_id = $2, posted_at = now() where id = $1`,
       [row.id, postId]
     );
+    notify('Easy FB Poster', `Posted: ${row.file_name}`);
   } catch (err) {
     const retries = Number(row.retry_count || 0);
     await pool.query(
       `update queue set status = 'failed', error = $2, retry_count = $3 where id = $1`,
       [row.id, String(err.message || err).slice(0, 500), retries + 1]
     );
+    notify('Easy FB Poster', `Failed: ${row.file_name} - ${String(err.message || err).slice(0, 120)}`);
   }
 }
 

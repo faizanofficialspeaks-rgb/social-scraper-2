@@ -34,6 +34,7 @@ function refreshAuth() {
     $('logoutBtn').onclick = () => supabase.auth.signOut();
     refreshFBStatus();
     refreshQueue();
+    refreshPreview();
     loadSettings();
   }
 }
@@ -272,6 +273,30 @@ $('postAll').onclick = async () => {
   refreshQueue();
 };
 
+// ---------- 7-day schedule preview ----------
+
+async function refreshPreview() {
+  try {
+    const { days } = await api('/api/schedule/preview');
+    $('previewGrid').innerHTML = days.map(d => {
+      const slotChips = d.slots.map(t => `<span class="chip slot-chip">${esc(t)}</span>`).join('');
+      const posts = d.posts.length
+        ? d.posts.map(p => `<div class="preview-post"><span class="chip ok">${esc(p.time)}</span><span class="pname">${esc(p.name)}</span></div>`).join('')
+        : '<div class="pname empty">—</div>';
+      return `<div class="day-col">
+        <div class="day-head">${esc(d.label)}<span class="day-date">${esc(d.date)}</span></div>
+        <div class="day-slots">${slotChips}</div>
+        <div class="day-posts">${posts}</div>
+      </div>`;
+    }).join('');
+  } catch { /* ignore */ }
+}
+
+function refreshAll() {
+  refreshQueue();
+  refreshPreview();
+}
+
 $('loginEmailBtn').onclick = async () => {
   const msg = $('loginMsg');
   msg.className = 'chip warn';
@@ -286,3 +311,4 @@ $('loginEmail').addEventListener('keydown', e => { if (e.key === 'Enter') $('log
 $('loginPassword').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginEmailBtn').click(); });
 
 setInterval(refreshQueue, 5000);
+setInterval(refreshPreview, 15000);

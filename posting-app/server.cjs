@@ -219,6 +219,40 @@ app.get('/api/queue', requireUser, async (req, res) => {
   res.json({ rows });
 });
 
+app.get('/api/schedule/preview', requireUser, async (req, res) => {
+  const s = await getSettings(req.user.id);
+  const { rows } = await pool.query(
+    `select file_name, scheduled_for, status from queue
+     where user_id = $1 and status in ('queued','processing') and scheduled_for is not null
+     order by scheduled_for`,
+    [req.user.id]
+  );
+  const days = [];
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : d.toLocaleDateString('en-US', { weekday: 'short' });
+    const slots = (s.pattern || []).slice(0, s.reels_per_day);
+    const posts = rows
+      .filter(r => {
+        const rd = new Date(r.scheduled_for);
+        return rd.getFullYear() === d.getFullYear() && rd.getMonth() === d.getMonth() && rd.getDate() === d.getDate();
+      })
+      .map(r => {
+        const rd = new Date(r.scheduled_for);
+        return {
+          time: `${String(rd.getHours()).padStart(2, '0')}:${String(rd.getMinutes()).padStart(2, '0')}`,
+          name: r.file_name,
+          status: r.status,
+        };
+      });
+    days.push({ date: iso, label, slots, posts });
+  }
+  res.json({ days });
+});
+
 app.post('/api/queue/:id/now', requireUser, async (req, res) => {
   await pool.query(
     `update queue set scheduled_for = now(), status = 'queued' where id = $1 and user_id = $2 and status = 'queued'`,
