@@ -5,6 +5,10 @@ require('dotenv').config();
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
+// Static policy pages (for Facebook Live mode)
+app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'privacy-policy.html')));
+app.get('/terms', (req, res) => res.sendFile(path.join(__dirname, 'terms.html')));
+
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'fb-poster', now: new Date().toISOString() });
 });
@@ -150,12 +154,16 @@ app.patch('/api/queue/:id/caption', requireUser, async (req, res) => {
 });
 
 app.delete('/api/queue/:id', requireUser, async (req, res) => {
-  const { error } = await admin
+  const { data, error } = await admin
     .from('post_queue')
     .delete()
     .eq('id', req.params.id).eq('user_id', req.user.id)
-    .eq('status', 'queued');
+    .in('status', ['queued', 'failed', 'duplicate'])
+    .select('id');
   if (error) return res.status(500).json({ error: error.message });
+  if (data?.length) {
+    try { fs.unlinkSync(path.join(UPLOAD_ROOT, req.user.id, `${req.params.id}.mp4`)); } catch { /* file already gone */ }
+  }
   res.json({ ok: true });
 });
 
