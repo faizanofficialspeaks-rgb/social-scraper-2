@@ -34,7 +34,11 @@
     <section class="card" id="queueCard">
       <div class="row-between">
         <h2>3 · Queue <span id="queueCount" class="chip"></span></h2>
-        <button id="postAll" class="primary">Sab Post Karo</button>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" id="selectAll"> Sab select</label>
+          <button id="deleteSelected" class="secondary" disabled>Delete Selected</button>
+          <button id="postAll" class="primary">Sab Post Karo</button>
+        </div>
       </div>
       <div id="queueList"></div>
     </section>
@@ -43,6 +47,11 @@
   <main id="loginPrompt" class="card hidden">
     <p class="sub">App use karne ke liye login karo.</p>
     <button id="loginBtn" class="primary">Google se Login</button>
+    <div class="login-divider">ya</div>
+    <input type="email" id="loginEmail" placeholder="Email" autocomplete="email">
+    <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+    <button id="loginEmailBtn" class="secondary">Email se Login</button>
+    <div id="loginMsg" class="chip"></div>
   </main>
 
   <script type="module" src="app.js"></script>

@@ -9,6 +9,10 @@ app.use(express.json({ limit: '2mb' }));
 app.get('/privacy', (req, res) => res.sendFile(path.join(__dirname, 'privacy-policy.html')));
 app.get('/terms', (req, res) => res.sendFile(path.join(__dirname, 'terms.html')));
 
+app.get('/health', (req, res) => {
+  res.json({ ok: true, service: 'fb-poster', now: new Date().toISOString() });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'fb-poster', now: new Date().toISOString() });
 });
@@ -153,6 +157,16 @@ app.patch('/api/queue/:id/caption', requireUser, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/queue/:id/retry', requireUser, async (req, res) => {
+  const { error } = await admin
+    .from('post_queue')
+    .update({ scheduled_for: new Date().toISOString(), status: 'queued', error: null, retry_count: 0 })
+    .eq('id', req.params.id).eq('user_id', req.user.id)
+    .eq('status', 'failed');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
 app.delete('/api/queue/:id', requireUser, async (req, res) => {
   const { data, error } = await admin
     .from('post_queue')
@@ -168,6 +182,13 @@ app.delete('/api/queue/:id', requireUser, async (req, res) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/uploads/:uid/:file', (req, res) => {
+  const uid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(req.params.uid);
+  const f = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4$/i.test(req.params.file);
+  if (!uid || !f) return res.status(400).json({ error: 'Bad filename' });
+  res.sendFile(path.join(UPLOAD_ROOT, req.params.uid, req.params.file), err => { if (err) res.status(404).json({ error: 'Not found' }); });
+});
 
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, '0.0.0.0', () => {
