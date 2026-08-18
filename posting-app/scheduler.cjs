@@ -1,45 +1,45 @@
-﻿const fs = require('fs');
-const path = require('path');
-const { admin } = require('./db.cjs');
+const fs = require('fs');
+const { pool } = require('./localdb.cjs');
 const { postWithRetry } = require('./publisher.cjs');
 
-const UPLOAD_ROOT = path.join(__dirname, 'uploads');
 const TEN_MIN = 10 * 60 * 1000;
 
 async function processRow(row) {
-  await admin.from('post_queue').update({ status: 'processing' }).eq('id', row.id);
-  const { data: profile } = await admin.from('profiles').select('fb_page_token, fb_page_id').eq('id', row.user_id).maybeSingle();
-  if (!profile?.fb_page_token || !profile?.fb_page_id) {
-    await admin.from('post_queue').update({ status: 'failed', error: 'Facebook not connected' }).eq('id', row.id);
+  await pool.query(`update queue set status = 'processing' where id = $1`, [row.id]);
+  const { rows: prof } = await pool.query('select fb_page_token, fb_page_id from fb_profile where user_id = $1', [row.user_id]);
+  if (!prof.length || !prof[0].fb_page_token || !prof[0].fb_page_id) {
+    await pool.query(`update queue set status = 'failed', error = 'Facebook not connected' where id = $1`, [row.id]);
     return;
   }
-  const filePath = path.join(UPLOAD_ROOT, row.user_id, `${row.id}.mp4`);
-  if (!fs.existsSync(filePath)) {
-    await admin.from('post_queue').update({ status: 'failed', error: 'Video file not found on this PC - delete this row and re-upload the folder' }).eq('id', row.id);
+  if (!fs.existsSync(row.file_path)) {
+    await pool.query(`update queue set status = 'failed', error = 'Video file not found - check folder path' where id = $1`, [row.id]);
     return;
   }
   try {
-    const { postId } = await postWithRetry({ pageId: profile.fb_page_id, pageToken: profile.fb_page_token, filePath, caption: row.caption });
-    await admin.from('post_queue').update({ status: 'posted', fb_post_id: postId, posted_at: new Date().toISOString() }).eq('id', row.id);
-    fs.unlinkSync(filePath);
+    const { postId } = await postWithRetry({ pageId: prof[0].fb_page_id, pageToken: prof[0].fb_page_token, filePath: row.file_path, caption: row.caption });
+    await pool.query(
+      `update queue set status = 'posted', fb_post_id = $2, posted_at = now() where id = $1`,
+      [row.id, postId]
+    );
   } catch (err) {
     const retries = Number(row.retry_count || 0);
-    await admin.from('post_queue').update({ status: 'failed', error: String(err.message || err).slice(0, 500), retry_count: retries + 1 }).eq('id', row.id);
+    await pool.query(
+      `update queue set status = 'failed', error = $2, retry_count = $3 where id = $1`,
+      [row.id, String(err.message || err).slice(0, 500), retries + 1]
+    );
   }
 }
 
 async function runDue() {
-  const { data: stuck } = await admin.from('post_queue')
-    .select('id').eq('status', 'processing')
-    .filter('created_at', 'lt', new Date(Date.now() - TEN_MIN).toISOString());
-  for (const r of stuck || []) {
-    await admin.from('post_queue').update({ status: 'failed', error: 'Timeout — retry manually' }).eq('id', r.id);
-  }
-  const { data: due } = await admin
-    .from('post_queue')
-    .select('*').eq('status', 'queued').lte('scheduled_for', new Date().toISOString())
-    .order('scheduled_for').limit(5);
-  for (const row of due || []) {
+  await pool.query(
+    `update queue set status = 'failed', error = 'Timeout - retry manually'
+     where status = 'processing' and created_at < now() - interval '10 minutes'`
+  );
+  const { rows: due } = await pool.query(
+    `select * from queue where status = 'queued' and scheduled_for <= now()
+     order by scheduled_for limit 5`
+  );
+  for (const row of due) {
     try { await processRow(row); } catch (e) { console.error('[SCHED] row failed', row.id, e.message); }
   }
 }

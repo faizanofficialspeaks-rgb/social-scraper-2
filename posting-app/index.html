@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Easy FB Poster</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Easy FB Poster</h1>
+    <div id="authBox"></div>
+  </header>
+
+  <main id="app" class="hidden">
+    <section class="card" id="fbCard">
+      <h2>1 · Facebook Connect</h2>
+      <p class="sub">Paste your Facebook Page Token (or user token — auto-converts).</p>
+      <input type="password" id="fbToken" placeholder="EAAG... (Facebook token)" autocomplete="off">
+      <button id="fbConnect" class="primary">Connect Facebook</button>
+      <div class="row-between" style="margin-top:10px;">
+        <label>Posting page: <select id="fbPages"><option>—</option></select></label>
+        <span id="fbExpiry" class="chip"></span>
+      </div>
+      <div id="fbStatus" class="chip"></div>
+    </section>
+
+    <section class="card" id="settingsCard">
+      <h2>2 · Posting Schedule Settings</h2>
+      <p class="sub">Pattern-seekh kar auto-schedule: har din wohi times par random delay (jitter) ke saath.</p>
+      <div class="grid2">
+        <label>Reels per day (max 4)
+          <select id="reelsPerDay"><option>1</option><option>2</option><option selected>3</option><option>4</option></select>
+        </label>
+        <label>Gap between posts (hours, min)
+          <input type="number" id="minGap" min="1" max="4" value="2">
+        </label>
+        <label>Gap between posts (hours, max)
+          <input type="number" id="maxGap" min="1" max="8" value="4">
+        </label>
+        <label>Random delay (minutes, min)
+          <input type="number" id="jitterMin" min="0" max="120" value="10">
+        </label>
+        <label>Random delay (minutes, max)
+          <input type="number" id="jitterMax" min="0" max="120" value="60">
+        </label>
+      </div>
+      <div id="patternBox" class="grid2"></div>
+      <div class="row-between" style="margin-top:10px;">
+        <label style="font-size:13px;"><input type="checkbox" id="autoSchedule" checked> Auto-schedule on folder load</label>
+        <div style="display:flex;gap:8px;">
+          <button id="learnPattern" class="secondary">Learn from posts</button>
+          <button id="saveSettings" class="primary">Save Settings</button>
+        </div>
+      </div>
+      <div id="settingsMsg" class="chip"></div>
+    </section>
+
+    <section class="card" id="folderCard">
+      <h2>3 · Load Videos</h2>
+      <p class="sub">Folder ka path do (localhost — seedha access hoga, upload ki zaroorat nahi). Captions metadata.json se auto-import.</p>
+      <input type="text" id="folderPath" placeholder="D:\videos\batch-1" autocomplete="off">
+      <div class="row-between">
+        <button id="loadFolder" class="primary">Load Folder</button>
+        <span class="sub" style="margin:0;">ya</span>
+        <label class="dropzone small" id="dropzone">
+          <input type="file" id="fileInput" webkitdirectory multiple hidden>
+          <span>📁 Drop folder / browse</span>
+        </label>
+      </div>
+      <div id="uploadMsg" class="chip"></div>
+      <div id="progressWrap" class="hidden"><div id="progressBar"></div></div>
+    </section>
+
+    <section class="card" id="queueCard">
+      <div class="row-between">
+        <h2>4 · Queue <span id="queueCount" class="chip"></span></h2>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;"><input type="checkbox" id="selectAll"> Select All</label>
+          <button id="deleteSelected" class="secondary" disabled>Delete Selected</button>
+          <button id="postAll" class="primary">Post All Now</button>
+        </div>
+      </div>
+      <div id="queueList"></div>
+    </section>
+  </main>
+
+  <main id="loginPrompt" class="card hidden">
+    <p class="sub">Log in to use the app.</p>
+    <input type="email" id="loginEmail" placeholder="Email" autocomplete="email">
+    <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password">
+    <button id="loginEmailBtn" class="primary">Login</button>
+    <div id="loginMsg" class="chip"></div>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

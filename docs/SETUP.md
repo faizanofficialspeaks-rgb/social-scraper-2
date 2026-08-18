@@ -6,11 +6,11 @@ Everything you need to configure SocialScraper for production use.
 
 ## 1. Facebook Posting (separate app)
 
-All Facebook posting (queue, scheduling, auto-post) lives in **`posting-app/`** — a separate, cloud-hosted app. This scraper app is **scrape + download only**.
+All Facebook posting (queue, scheduling, auto-post) lives in **`posting-app/`** — a separate local app (also mirrored in the standalone repo `D:\fb-poster-app-clean`). This scraper app is **scrape + download only**.
 
 1. Run `supabase/migrations/003_posting.sql` in the Supabase SQL Editor.
-2. Deploy `posting-app/` to Koyeb (free tier) — steps: `posting-app/README.md`.
-3. Workflow: scrape here → download ZIP → extract folder → drop it in the poster app → videos queue with captions auto-imported → posted 24/7 from the cloud.
+2. Run `posting-app/` locally: `cd posting-app; npm install; npm start` (default port 8000; set `PORT` if needed).
+3. Workflow: scrape here → download ZIP → extract folder → drop it in the poster app → videos queue with captions auto-imported → posted from the same PC (localhost only — no cloud/VPS).
 
 ## 2. Supabase (Accounts & Credits)
 

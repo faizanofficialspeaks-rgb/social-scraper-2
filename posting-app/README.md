@@ -1,39 +1,33 @@
 # Easy FB Poster
 
-Simple web app to publish Facebook Reels/posts. Separate from the scraper app (extension one) — here it is only uploading + Facebook posting. Runs on **localhost** — no cloud, no VPS.
+Simple web app to publish Facebook Reels/posts. Runs on **localhost** — no cloud, no VPS. Supabase is used **only for login**; the queue, settings and Facebook profile live in **local PostgreSQL**.
 
-## Workflow
+## How it works
 
-1. User downloads the extension ZIP from the scraper app → extracts it (clean folder: videos + metadata.json)
-2. In this app: login (email/password) → **Connect Facebook** (page token or user token — auto page-token conversion)
-3. Folder **drag & drop** → videos go into the queue, captions auto-imported from `metadata.json` (editable)
-4. Set a time per video (or **Post Now**) → the local scheduler posts it while the PC is on
-5. Re-upload → sha256 hash match → **duplicate skipped** (never double-posted)
+1. **Login** (email/password via Supabase)
+2. **Connect Facebook** — paste a page token or user token (auto-converts). Multiple pages are saved — pick the posting page from the dropdown.
+3. **Settings** — reels per day (default 3, max 4), gap between posts (default 2h, max 4h), random delay/jitter (default 10–60 min) and pattern times (e.g. 12:00 / 15:00 / 19:00). "Learn from posts" reads the times of already-posted videos and adopts them as the pattern.
+4. **Load a folder** — give the app a local folder path (e.g. `D:\videos\batch-1`). It scans `.mp4` files directly (no upload), imports captions from `metadata.json`, skips duplicates by hash, and **auto-schedules** all videos on the pattern: each day the same times with a random 10–60 min delay, same-day gaps kept between min and max.
+5. The local scheduler posts due videos every 30s while the PC is on. Per-row: Post Now, Retry, Delete, caption/time edit.
 
 ## Local Run
 
 ```bash
-cd posting-app
-copy .env.example .env   # fill SUPABASE_URL/ANON_KEY/SERVICE_ROLE_KEY
 npm install
-npm start                # port 8010 (override with PORT env)
+copy .env.example .env   # fill SUPABASE keys + local PG creds
+npm start                # port 8081 (override with PORT env)
 ```
-
-## Supabase Setup
-
-- Run `supabase/migrations/001_init.sql` + `002_*` + `003_posting.sql` in the SQL Editor
-- Email/password provider enabled in Auth
 
 ## Env Reference
 
 | Var | From | Required |
 |---|---|---|
-| `SUPABASE_URL` | Supabase → Settings → API | Yes |
-| `SUPABASE_ANON_KEY` | same (public) | Yes |
-| `SUPABASE_SERVICE_ROLE_KEY` | same (secret) | Yes |
-| `PORT` | 8010 (local) | default |
+| `PORT` | – | no (default 8000) |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` | Supabase (login only) | yes |
+| `PG_HOST` / `PG_PORT` / `PG_USER` / `PG_PASSWORD` / `PG_DATABASE` | local PostgreSQL (defaults: 127.0.0.1:5433, outreachpro/outreachpro, db `fb_poster`) | no (defaults) |
 
 ## Notes
 
-- Video files live in the local `uploads/` folder (upload → post → delete). The queue/dedup lives in Supabase.
-- FB dev token (Graph API Explorer) expires — for permanent access use a proper Facebook Login app. Facebook app must be in **Live mode** (requires a public Privacy Policy URL, e.g. the Netlify static site) for real video posting.
+- Video files stay in your folders — the app only stores the path. Deleting a queued row removes the DB row, not the file.
+- Facebook app must be in **Live mode** (public Privacy Policy URL, e.g. the Netlify static site) for real video posting; dev tokens fail with decryption/permission errors.
+- Token expiry is estimated at 60 days from connect (shown in the UI with a warning below 7 days).
