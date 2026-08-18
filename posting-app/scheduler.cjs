@@ -1,4 +1,4 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const path = require('path');
 const { admin } = require('./db.cjs');
 const { postWithRetry } = require('./publisher.cjs');
@@ -15,7 +15,7 @@ async function processRow(row) {
   }
   const filePath = path.join(UPLOAD_ROOT, row.user_id, `${row.id}.mp4`);
   if (!fs.existsSync(filePath)) {
-    await admin.from('post_queue').update({ status: 'failed', error: 'Video file missing (redeploy?) — re-upload' }).eq('id', row.id);
+    await admin.from('post_queue').update({ status: 'failed', error: 'Video file not found on this PC - delete this row and re-upload the folder' }).eq('id', row.id);
     return;
   }
   try {
