@@ -1,4 +1,4 @@
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -7,8 +7,9 @@ let supabase;
 (async () => {
   const cfg = await fetch('/api/config').then(r => r.json());
   supabase = createClient(cfg.url, cfg.anon);
-  supabase.auth.onAuthStateChange(() => refreshAuth());
-  refreshAuth();
+  supabase.auth.onAuthStateChange((ev, session) => renderAuth(!!session));
+  const { data } = await supabase.auth.getSession();
+  renderAuth(!!data.session);
 })();
 
 async function api(url, opts = {}) {
@@ -22,9 +23,7 @@ async function api(url, opts = {}) {
   return body;
 }
 
-function refreshAuth() {
-  const s = supabase?.auth?.getSession?.();
-  const loggedIn = !!s?.data?.session;
+function renderAuth(loggedIn) {
   $('app').classList.toggle('hidden', !loggedIn);
   $('loginPrompt').classList.toggle('hidden', loggedIn);
   $('authBox').innerHTML = loggedIn
